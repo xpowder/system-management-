@@ -1869,54 +1869,58 @@ function ExpensesPage() {
             void add();
           }}
         >
-          <label>
-            Category
-            <select
-              value={form.category}
-              onChange={(event) => setForm({ ...form, category: event.target.value })}
-            >
-              {EXPENSE_CATEGORIES.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Description
-            <input
-              value={form.title}
-              onChange={(event) => setForm({ ...form, title: event.target.value })}
-              placeholder="Cleaning lady, ONEE bill..."
-            />
-          </label>
-          <label>
-            Amount (MAD)
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              required
-              value={form.amount}
-              onChange={(event) => setForm({ ...form, amount: event.target.value })}
-              placeholder="0.00"
-            />
-          </label>
-          <button className="primary" type="submit">
-            <Plus size={16} /> Add
-          </button>
+          <div className="expense-fields">
+            <label className="expense-field">
+              Category
+              <select
+                value={form.category}
+                onChange={(event) => setForm({ ...form, category: event.target.value })}
+              >
+                {EXPENSE_CATEGORIES.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="expense-field expense-field-amount">
+              Amount (MAD)
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                required
+                value={form.amount}
+                onChange={(event) => setForm({ ...form, amount: event.target.value })}
+                placeholder="0.00"
+              />
+            </label>
+            <label className="expense-field expense-field-wide">
+              Description
+              <input
+                value={form.title}
+                onChange={(event) => setForm({ ...form, title: event.target.value })}
+                placeholder="Cleaning lady, ONEE bill..."
+              />
+            </label>
+            <label className="expense-field expense-field-wide">
+              Notes (optional)
+              <input
+                value={form.notes}
+                onChange={(event) => setForm({ ...form, notes: event.target.value })}
+                placeholder="Invoice number, paid to..."
+              />
+            </label>
+          </div>
+          <div className="expense-form-actions">
+            <button className="primary" type="submit">
+              <Plus size={16} /> Add expense
+            </button>
+          </div>
         </form>
-        <label className="expense-notes">
-          Notes (optional)
-          <input
-            value={form.notes}
-            onChange={(event) => setForm({ ...form, notes: event.target.value })}
-            placeholder="Invoice number, paid to..."
-          />
-        </label>
       </section>
       {byCategory.length > 0 && (
-        <div className="ledger-stats" style={{ marginTop: 16 }}>
+        <div className="ledger-stats category-cards">
           {byCategory.map((item) => (
             <div className="ledger-stat" key={item.value}>
               <span>{item.label}</span>
@@ -1928,7 +1932,7 @@ function ExpensesPage() {
           ))}
         </div>
       )}
-      <section className="panel table-wrap reports-panel" style={{ marginTop: 16 }}>
+      <section className="panel table-wrap reports-panel">
         <div className="reports-panel-head">
           <div>
             <span className="eyebrow">THIS MONTH</span>
@@ -1954,16 +1958,18 @@ function ExpensesPage() {
             <tbody>
               {expenses.map((expense) => (
                 <tr key={expense.id}>
-                  <td>{expense.category_label}</td>
-                  <td>{expense.title || "—"}</td>
-                  <td className="table-money">
+                  <td data-label="Category">{expense.category_label}</td>
+                  <td data-label="Description">{expense.title || "—"}</td>
+                  <td className="table-money" data-label="Amount">
                     <strong className="amount-owing">{money(expense.amount)}</strong>
                   </td>
-                  <td>{expense.notes || "—"}</td>
-                  <td className="table-actions">
-                    <button className="text-button" onClick={() => void remove(expense)}>
-                      Delete
-                    </button>
+                  <td data-label="Notes">{expense.notes || "—"}</td>
+                  <td data-label="Actions">
+                    <div className="table-actions">
+                      <button type="button" className="text-button" onClick={() => void remove(expense)}>
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
