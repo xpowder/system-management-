@@ -9,21 +9,35 @@ export default function App() {
 	const { t } = useLang()
 	const [user, setUser] = useState<Awaited<ReturnType<typeof bookingApi.me>> | null>(null)
 	const [busy, setBusy] = useState(true)
+	const [submitting, setSubmitting] = useState(false)
 	const [error, setError] = useState('')
 	const [form, setForm] = useState({ username: '', password: '' })
 
 	useEffect(() => { bookingApi.me().then(setUser).catch(() => undefined).finally(() => setBusy(false)) }, [])
-	if (busy) return <div className="auth-page"><section className="auth-card"><span className="eyebrow">FlexOper</span><h1>{t('auth.loading')}</h1></section></div>
+	if (busy) {
+		return (
+			<div className="auth-page">
+				<section className="auth-card auth-loading-card">
+					<span className="brand-mark">F</span>
+					<h1>{t('auth.loading')}</h1>
+					<div className="auth-spinner" aria-hidden="true" />
+				</section>
+			</div>
+		)
+	}
 	if (user) return <GymApp currentUser={user} onLogout={() => setUser(null)} />
 
 	const submit = async (event: React.FormEvent) => {
 		event.preventDefault()
 		setError('')
+		setSubmitting(true)
 		try {
 			const nextUser = await bookingApi.login(form)
 			setUser(nextUser)
 		} catch (e) {
 			setError(e instanceof Error ? e.message : t('auth.failed'))
+		} finally {
+			setSubmitting(false)
 		}
 	}
 
@@ -48,7 +62,9 @@ export default function App() {
 				<form onSubmit={submit}>
 					<label>{t('auth.username')}<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label>
 					<label>{t('auth.password')}<input type="password" required autoComplete="current-password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label>
-					<button className="primary auth-submit" type="submit">{t('auth.signIn')}</button>
+					<button className="primary auth-submit" type="submit" disabled={submitting}>
+						{submitting ? t('auth.signingIn') : t('auth.signIn')}
+					</button>
 				</form>
 			</section>
 		</div>

@@ -175,6 +175,12 @@ function csrfToken() {
   const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/)
   return match ? decodeURIComponent(match[1]) : ''
 }
+
+function safeDownloadName(name: string, fallback: string) {
+  const cleaned = name.replace(/[/\\?%*:|"<>]/g, '_').split(/[/\\]/).pop()?.trim() || ''
+  if (!cleaned || cleaned === '.' || cleaned === '..') return fallback
+  return cleaned.slice(0, 180)
+}
 function requestError(status: number, body: { detail?: string; error?: string } = {}) {
   return new Error(
     body.detail ||
@@ -221,7 +227,10 @@ async function downloadFile(path: string, fallbackName: string) {
     const disposition = response.headers.get('Content-Disposition') || ''
     const utfName = disposition.match(/filename\*=UTF-8''([^;]+)/i)
     const plainName = disposition.match(/filename="?([^";]+)"?/i)
-    const filename = decodeURIComponent(utfName?.[1] || plainName?.[1] || fallbackName)
+    const filename = safeDownloadName(
+      decodeURIComponent(utfName?.[1] || plainName?.[1] || fallbackName),
+      fallbackName,
+    )
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -302,13 +311,14 @@ export const gymApi = {
         throw requestError(response.status, body)
       }
       const html = await response.text()
-      const win = window.open('', '_blank')
+      const win = window.open('', '_blank', 'noopener,noreferrer')
       if (!win) {
         await downloadFile(`/fitness/payments/${id}/receipt`, `flexoper-receipt-FO-${String(id).padStart(6, '0')}.pdf`)
         return
       }
-      win.document.write(html)
-      win.document.close()
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }))
+      win.location.replace(url)
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (error) {
       if (error instanceof TypeError) throw new Error("You're currently offline. Homezup needs an internet connection to access gym data.")
       throw error

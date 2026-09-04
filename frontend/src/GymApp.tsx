@@ -2,6 +2,7 @@
 import { createPortal } from "react-dom";
 import {
   Activity,
+  BarChart3,
   Bell,
   CalendarCheck,
   Check,
@@ -184,6 +185,68 @@ function openRecordPaymentForm({
   amountInput.focus();
 }
 
+const PAGE_SIZE = 40;
+
+function LoadMoreBar({
+  shown,
+  total,
+  onMore,
+}: {
+  shown: number;
+  total: number;
+  onMore: () => void;
+}) {
+  const { t } = useLang();
+  if (total <= PAGE_SIZE) return null;
+  return (
+    <div className="load-more">
+      <span>{t("list.shown", { shown: Math.min(shown, total), total })}</span>
+      {shown < total && (
+        <button type="button" className="secondary" onClick={onMore}>
+          {t("list.showMore")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function isSafeWhatsAppUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === "wa.me" || host === "api.whatsapp.com" || host === "web.whatsapp.com" || host.endsWith(".whatsapp.com");
+  } catch {
+    return false;
+  }
+}
+
+function clipText(value: unknown, max = 200) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function asPositiveId(value: unknown) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function indexLatestMembership(items: Membership[]) {
+  const grouped = new Map<number, Membership[]>();
+  for (const item of items) {
+    const list = grouped.get(item.member_id);
+    if (list) list.push(item);
+    else grouped.set(item.member_id, [item]);
+  }
+  const chosen = new Map<number, Membership>();
+  for (const [id, group] of grouped) {
+    chosen.set(
+      id,
+      group.find((item) => item.status === "active" || item.status === "expiring_soon") ?? group[0],
+    );
+  }
+  return chosen;
+}
+
 function Toast({
   message,
   onDismiss,
@@ -229,23 +292,33 @@ function Stat({
   value,
   detail,
   className = "",
+  onClick,
 }: {
   icon: LucideIcon;
   label: string;
   value: string | number;
   detail: string;
   className?: string;
+  onClick?: () => void;
 }) {
-  return (
-    <article className={`stat ${className}`}>
+  const inner = (
+    <>
       <div className="stat-icon">
         <Icon size={18} />
       </div>
       <span>{label}</span>
       <strong>{value}</strong>
       <small>{detail}</small>
-    </article>
+    </>
   );
+  if (onClick) {
+    return (
+      <button type="button" className={`stat is-link ${className}`} onClick={onClick}>
+        {inner}
+      </button>
+    );
+  }
+  return <article className={`stat ${className}`}>{inner}</article>;
 }
 
 type Page =
@@ -311,13 +384,6 @@ export default function GymApp({
 }) {
   const { t, lang } = useLang();
   loggedInStaffName = staffDisplayName(currentUser);
-  const [showWelcome, setShowWelcome] = useState(() => {
-    try {
-      return sessionStorage.getItem("flexoper-welcome") !== "done";
-    } catch {
-      return true;
-    }
-  });
   const [today, setToday] = useState(todayLabel)
   const [notifications, setNotifications] = useState<GymNotification[]>([])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -338,22 +404,6 @@ export default function GymApp({
       onLogout();
     }
   };
-  useEffect(() => {
-    const userChip = document.querySelector(".user-chip");
-    const sidebarBottom = document.querySelector(".sidebar-bottom");
-    if (!userChip || !sidebarBottom) return;
-    userChip.addEventListener("click", logout);
-    const button = document.createElement("button");
-    button.className = "auth-logout";
-    button.type = "button";
-    button.textContent = t("auth.signOut");
-    button.onclick = logout;
-    sidebarBottom.append(button);
-    return () => {
-      userChip.removeEventListener("click", logout);
-      button.remove();
-    };
-  }, [logout, t]);
   const [page, setPage] = useState<Page>(() =>
     window.location.pathname === "/admin" && canAdminister
       ? "admin"
@@ -386,7 +436,10 @@ export default function GymApp({
   }
   useEffect(() => {
     void refreshNotifications()
-    const timer = window.setInterval(() => void refreshNotifications(), 12_000)
+    const timer = window.setInterval(() => {
+      if (document.hidden) return
+      void refreshNotifications()
+    }, 30_000)
     return () => window.clearInterval(timer)
   }, [])
   const placeNotificationMenu = () => {
@@ -575,22 +628,37 @@ export default function GymApp({
     go(target.page, target.status ? { status: target.status } : undefined)
   }
 
-  const memberName = (id: number) =>
-    members.find((member) => member.id === id)?.name || `Member #${id}`;
-  const planName = (id: number) =>
-    plans.find((plan) => plan.id === id)?.name || `Plan #${id}`;
-  const filteredMembers = members.filter((member) =>
-    `${member.name} ${member.phone} ${member.email} ${member.id_number || ""} ${member.address || ""} ${member.city || ""} ${member.id}`
-      .toLowerCase()
-      .includes(query.toLowerCase()),
-  );
-  const filteredMemberships = memberships.filter(
-    (item) =>
-      (!status || item.status === status) &&
-      `${memberName(item.member_id)} ${planName(item.plan_id)}`
+  const memberById = useMemo(() => {
+    const map = new Map<number, Member>();
+    for (const member of members) map.set(member.id, member);
+    return map;
+  }, [members]);
+  const planById = useMemo(() => {
+    const map = new Map<number, Plan>();
+    for (const plan of plans) map.set(plan.id, plan);
+    return map;
+  }, [plans]);
+  const memberName = (id: number) => memberById.get(id)?.name || `Member #${id}`;
+  const planName = (id: number) => planById.get(id)?.name || `Plan #${id}`;
+  const filteredMembers = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return members;
+    return members.filter((member) =>
+      `${member.name} ${member.phone} ${member.email} ${member.id_number || ""} ${member.address || ""} ${member.city || ""} ${member.id}`
         .toLowerCase()
-        .includes(query.toLowerCase()),
-  );
+        .includes(needle),
+    );
+  }, [members, query]);
+  const filteredMemberships = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return memberships.filter((item) => {
+      if (status && item.status !== status) return false;
+      if (!needle) return true;
+      const name = memberById.get(item.member_id)?.name || `Member #${item.member_id}`;
+      const plan = planById.get(item.plan_id)?.name || `Plan #${item.plan_id}`;
+      return `${name} ${plan}`.toLowerCase().includes(needle);
+    });
+  }, [memberships, status, query, memberById, planById]);
 
   const checkIn = async (id: number) => {
     try {
@@ -954,24 +1022,44 @@ export default function GymApp({
     return payment;
   };
 
-  const navItems: Array<[Page, LucideIcon]> = [
-    ["dashboard", LayoutDashboard],
-    ["members", Users],
-    ["classes", Dumbbell],
-    ["memberships", ClipboardList],
-    ["payments", CircleDollarSign],
-    ["attendance", CalendarCheck],
-    ["reminders", MessageCircle],
-    ...(canAdminister
-      ? [
-          ["trainers", Users] as [Page, LucideIcon],
-          ["expenses", Receipt] as [Page, LucideIcon],
-          ["admin", SettingsIcon] as [Page, LucideIcon],
-        ]
-      : []),
-    ["plans", Activity],
-    ["reports", Activity],
-    ["notifications", Bell],
+  const navGroups: Array<{ label: Msg; items: Array<[Page, LucideIcon]> }> = [
+    {
+      label: "nav.group.front",
+      items: [
+        ["dashboard", LayoutDashboard],
+        ["attendance", CalendarCheck],
+        ["members", Users],
+        ["memberships", ClipboardList],
+      ],
+    },
+    {
+      label: "nav.group.money",
+      items: [
+        ["payments", CircleDollarSign],
+        ["reminders", MessageCircle],
+        ["reports", BarChart3],
+      ],
+    },
+    {
+      label: "nav.group.gym",
+      items: [
+        ["classes", Dumbbell],
+        ["plans", Activity],
+        ...(canAdminister ? [["trainers", Users] as [Page, LucideIcon]] : []),
+      ],
+    },
+    {
+      label: "nav.group.admin",
+      items: [
+        ...(canAdminister
+          ? [
+              ["expenses", Receipt] as [Page, LucideIcon],
+              ["admin", SettingsIcon] as [Page, LucideIcon],
+            ]
+          : []),
+        ["notifications", Bell],
+      ],
+    },
   ];
   const roleLabel =
     role.includes("super") ? t("role.superAdmin")
@@ -979,35 +1067,15 @@ export default function GymApp({
     : role.includes("trainer") ? t("role.trainer")
     : t("role.admin");
 
-  const finishWelcome = () => {
-    try {
-      sessionStorage.setItem("flexoper-welcome", "done");
-    } catch {
-      /* ignore */
-    }
-    setShowWelcome(false);
-  };
-
-  useEffect(() => {
-    if (!showWelcome) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) {
-      finishWelcome();
-      return;
-    }
-    const timer = window.setTimeout(finishWelcome, 1500);
-    return () => window.clearTimeout(timer);
-  }, [showWelcome]);
-
   return (
-    <div className={`app-shell${showWelcome ? " is-welcoming" : ""}`}>
-      {showWelcome && (
-        <div className="welcome-screen" onClick={finishWelcome} role="status">
-          <span className="welcome-mark">F</span>
-          <strong>FlexOper</strong>
-          <small>{t("welcome.title")}</small>
-          <em>{t("welcome.sub")}</em>
-        </div>
+    <div className="app-shell">
+      {mobileMenuOpen && (
+        <button
+          type="button"
+          className="sidebar-backdrop"
+          aria-label={t("nav.close")}
+          onClick={() => setMobileMenuOpen(false)}
+        />
       )}
       <aside className={`sidebar ${mobileMenuOpen ? "mobile-open" : ""}`}>
         <div className="brand">
@@ -1017,33 +1085,33 @@ export default function GymApp({
             <small>{t("brand.tag")}</small>
           </div>
         </div>
-        <div className="workspace-label">{t("brand.workspace")}</div>
-        <nav>
-          {navItems.map(([key, Icon]) => (
-            <button
-              key={key}
-              className={page === key ? "active" : ""}
-              onClick={() => go(key)}
-            >
-              <Icon size={18} /> {t(`nav.${key}` as Msg)}
-            </button>
+        <nav className="sidebar-nav">
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <p className="nav-group-label">{t(group.label)}</p>
+              {group.items.map(([key, Icon]) => (
+                <button
+                  key={key}
+                  className={page === key ? "active" : ""}
+                  onClick={() => go(key)}
+                >
+                  <Icon size={17} strokeWidth={1.9} /> {t(`nav.${key}` as Msg)}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="connection">
-            <span></span>
-            <div>
-              <strong>{t("api.live")}</strong>
-              <small>{t("api.liveDetail")}</small>
-            </div>
-          </div>
           <div className="user-chip">
-            <span>{currentUser.username.slice(0, 2).toUpperCase()}</span>
+            <span>{(currentUser.first_name || currentUser.username).slice(0, 1).toUpperCase()}</span>
             <div>
               <strong>{currentUser.first_name || currentUser.username}</strong>
               <small>{roleLabel}</small>
             </div>
           </div>
+          <button type="button" className="auth-logout" onClick={() => void logout()}>
+            <LogOut size={15} /> {t("auth.signOut")}
+          </button>
         </div>
       </aside>
       <main className="main">
@@ -1155,7 +1223,7 @@ export default function GymApp({
             </button>
           </div>
         )}
-        <div className={`page-stage${page === "dashboard" && !showWelcome ? " overview-enter" : ""}`} key={page}>
+        <div className={`page-stage${page === "dashboard" ? " overview-enter" : ""}`} key={page}>
         {page === "dashboard" && (
           <Dashboard
             data={dashboard}
@@ -1325,33 +1393,26 @@ function Dashboard({
   data: GymDashboard | null;
   members: Member[];
   classes: FitnessClass[];
-  go: (page: Page) => void;
+  go: (page: Page, options?: { status?: string }) => void;
 }) {
   const { t } = useLang();
   return (
     <div className="content">
       <section className="hero-strip">
         <div>
-          <span className="eyebrow light">GYM OVERVIEW</span>
+          <span className="eyebrow light">{t("dash.pulse")}</span>
           <h2>{t("dash.hero")}</h2>
           <p>{t("dash.heroP")}</p>
         </div>
-        <Dumbbell size={76} strokeWidth={1} />
-      </section>
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">{t("dash.glance")}</span>
-          <h2>{t("dash.pulse")}</h2>
-        </div>
-        <div className="top-actions">
-          <button className="text-button" onClick={() => go("reports")}>
+        <div className="hero-actions">
+          <button className="text-button light-link" onClick={() => go("reports")}>
             {t("dash.reports")}
           </button>
-          <button className="text-button" onClick={() => go("reminders")}>
-            {t("dash.reminders")}
+          <button className="primary" onClick={() => go("members")}>
+            <UserPlus size={17} /> {t("addMember")}
           </button>
         </div>
-      </div>
+      </section>
       <div className="stats-grid">
         <Stat
           icon={Users}
@@ -1359,6 +1420,7 @@ function Dashboard({
           value={data?.members ?? "—"}
           detail={t("dash.active", { n: data?.active_members ?? 0 })}
           className="sage"
+          onClick={() => go("members")}
         />
         <Stat
           icon={CalendarCheck}
@@ -1366,12 +1428,14 @@ function Dashboard({
           value={data?.expiring_soon ?? "—"}
           detail={t("dash.expiringDetail")}
           className="coral"
+          onClick={() => go("memberships", { status: "expiring_soon" })}
         />
         <Stat
           icon={Activity}
           label={t("dash.activeMemberships")}
           value={data?.active_members ?? "—"}
           detail={t("dash.currentlyActive")}
+          onClick={() => go("memberships", { status: "active" })}
         />
         <Stat
           icon={CircleDollarSign}
@@ -1379,6 +1443,7 @@ function Dashboard({
           value={data ? money(data.cash_this_month) : "—"}
           detail={t("dash.thisMonth")}
           className="gold"
+          onClick={() => go("payments")}
         />
         <Stat
           icon={CircleDollarSign}
@@ -1386,6 +1451,7 @@ function Dashboard({
           value={data ? money(data.outstanding) : "—"}
           detail={t("dash.across")}
           className="ink"
+          onClick={() => go("payments")}
         />
       </div>
       {(data?.whatsapp_due ?? 0) > 0 && (
@@ -1406,44 +1472,54 @@ function Dashboard({
           </div>
         </section>
       )}
-      {classes.length > 0 && (
+      <div className="dashboard-split">
+      {classes.length > 0 ? (
         <section className="panel latest">
           <div className="panel-heading">
             <div>
-              <span className="eyebrow">{t("nav.classes").toUpperCase()}</span>
+              <span className="eyebrow">{t("nav.classes")}</span>
               <h2>{t("dash.classes")}</h2>
             </div>
             <button className="text-button" onClick={() => go("classes")}>
               {t("common.viewAll")}
             </button>
           </div>
-          {classes.slice(0, 3).map((item) => (
-            <div className="booking-row" key={item.id}>
+          {classes.slice(0, 4).map((item) => (
+            <button type="button" className="booking-row" key={item.id} onClick={() => go("classes")}>
               <span className="booking-number">{item.name}</span>
               <span className="booking-main">
-                <strong>{item.member_count} members</strong>
+                <strong>{t("dash.classMembers", { n: item.member_count })}</strong>
                 <small>{item.class_type}</small>
               </span>
-              <span className="status active">
-                {item.is_active ? "Active" : "Inactive"}
+              <span className={`status ${item.is_active ? "active" : "expired"}`}>
+                {item.is_active ? t("common.active") : t("common.inactive")}
               </span>
-            </div>
+            </button>
           ))}
-          {!classes.length && <div className="empty">No classes found.</div>}
+        </section>
+      ) : (
+        <section className="panel latest">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">{t("nav.classes")}</span>
+              <h2>{t("dash.classes")}</h2>
+            </div>
+          </div>
+          <div className="empty">{t("dash.noClasses")}</div>
         </section>
       )}
       <section className="panel latest">
         <div className="panel-heading">
           <div>
-            <span className="eyebrow">{t("dash.recent").toUpperCase()}</span>
+            <span className="eyebrow">{t("dash.recent")}</span>
             <h2>{t("dash.recent")}</h2>
           </div>
           <button className="text-button" onClick={() => go("members")}>
             {t("common.viewAll")}
           </button>
         </div>
-        {members.slice(0, 5).map((member) => (
-          <div className="booking-row" key={member.id}>
+        {(data?.recent_members?.length ? data.recent_members : members.slice(0, 5)).map((member) => (
+          <button type="button" className="booking-row" key={member.id} onClick={() => go("members")}>
             <span className="booking-number">
               #{String(member.id).padStart(5, "0")}
             </span>
@@ -1454,10 +1530,11 @@ function Dashboard({
               </small>
             </span>
             <span className="status active">{t("dash.member")}</span>
-          </div>
+          </button>
         ))}
-        {!members.length && <div className="empty">No members found.</div>}
+        {!members.length && !data?.recent_members?.length && <div className="empty">{t("dash.noMembers")}</div>}
       </section>
+      </div>
     </div>
   );
 }
@@ -1495,7 +1572,7 @@ function RemindersPage() {
   }, []);
 
   const openWhatsApp = async (item: WhatsAppReminder) => {
-    if (!item.whatsapp_url) return;
+    if (!item.whatsapp_url || !isSafeWhatsAppUrl(item.whatsapp_url)) return;
     window.open(item.whatsapp_url, "_blank", "noopener,noreferrer");
     try {
       await gymApi.markReminderSent(item.membership_id, item.message);
@@ -1520,6 +1597,11 @@ function RemindersPage() {
     if (filter === "missing_phone") return !item.whatsapp_url;
     return item.reasons.includes(filter);
   });
+  const [shown, setShown] = useState(PAGE_SIZE);
+  useEffect(() => {
+    setShown(PAGE_SIZE);
+  }, [filter, data?.items.length]);
+  const pagedItems = items.slice(0, shown);
 
   return (
     <div className="content">
@@ -1566,6 +1648,7 @@ function RemindersPage() {
           </div>
         )}
         {!loading && items.length > 0 && (
+          <>
           <table>
             <thead>
               <tr>
@@ -1578,7 +1661,7 @@ function RemindersPage() {
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {pagedItems.map((item) => (
                 <tr key={item.membership_id}>
                   <td>
                     <strong>{item.member_name}</strong>
@@ -1611,7 +1694,7 @@ function RemindersPage() {
                   <td>{item.phone || t("common.noPhone")}</td>
                   <td className="table-actions">
                     {item.whatsapp_url ? (
-                      <button className="whatsapp-button" onClick={() => void openWhatsApp(item)}>
+                      <button type="button" className="whatsapp-button" onClick={() => void openWhatsApp(item)}>
                         <MessageCircle size={14} /> WhatsApp
                       </button>
                     ) : (
@@ -1625,6 +1708,8 @@ function RemindersPage() {
               ))}
             </tbody>
           </table>
+          <LoadMoreBar shown={shown} total={items.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
+          </>
         )}
       </section>
     </div>
@@ -1942,7 +2027,20 @@ function Administration() {
           role: form.role,
           ...(form.password ? { password: form.password } : {}),
         });
-      else await bookingApi.createAdminUser(form);
+      else {
+        if (!form.username.trim() || form.password.length < 8) {
+          setError("Username and a password of at least 8 characters are required.");
+          return;
+        }
+        await bookingApi.createAdminUser({
+          username: form.username.trim(),
+          password: form.password,
+          first_name: form.first_name.trim(),
+          last_name: form.last_name.trim(),
+          email: form.email.trim(),
+          role: form.role,
+        });
+      }
       setNotice(
         editing ? "User updated successfully." : "User created successfully.",
       );
@@ -2184,10 +2282,10 @@ function Administration() {
             </select>
           </label>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setOpen(false)}>
+            <button type="button" className="secondary" onClick={() => setOpen(false)}>
               Cancel
             </button>
-            <button className="primary" onClick={() => void save()}>
+            <button type="button" className="primary" onClick={() => void save()}>
               {editing ? "Save changes" : "Create user"}
             </button>
           </div>
@@ -2223,20 +2321,32 @@ function Administration() {
                 <td>{user.last_login ? date(user.last_login) : "Never"}</td>
                 <td className="table-actions">
                   <button
+                    type="button"
                     className="text-button"
-                    onClick={() => startEdit(user)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      startEdit(user);
+                    }}
                   >
                     Edit
                   </button>
                   <button
+                    type="button"
                     className="text-button"
-                    onClick={() => void toggle(user)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void toggle(user);
+                    }}
                   >
                     {user.is_active ? "Deactivate" : "Activate"}
                   </button>
                   <button
+                    type="button"
                     className="text-button"
-                    onClick={() => void remove(user)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void remove(user);
+                    }}
                   >
                     Delete
                   </button>
@@ -2677,12 +2787,9 @@ function Members({
     });
     return statuses;
   }, [memberships]);
-  const membershipFor = (memberId: number): Membership | undefined => {
-    const items = memberships.filter((item) => item.member_id === memberId);
-    if (!items.length) return undefined;
-    return items.find((item) => item.status === "active" || item.status === "expiring_soon") ?? items[0];
-  };
-    const [form, setForm] = useState({
+  const membershipByMemberId = useMemo(() => indexLatestMembership(memberships), [memberships]);
+  const membershipFor = (memberId: number) => membershipByMemberId.get(memberId);
+  const [form, setForm] = useState({
     first_name: "",
     last_name: "",
     phone: "",
@@ -2715,7 +2822,7 @@ function Members({
       else counts.unpaid += 1;
     });
     return counts;
-  }, [people, memberships]);
+  }, [people, membershipByMemberId]);
   const summary = useMemo(() => {
     const counts = { total: people.length, active: 0, expiring: 0, expired: 0, none: 0 };
     people.forEach((member) => {
@@ -2744,7 +2851,13 @@ function Members({
       if (paymentFilter === "unpaid" && payment !== "unpaid") return false;
       return true;
     });
-  }, [people, memberStatuses, statusFilter, classFilter, paymentFilter, memberships]);
+  }, [people, memberStatuses, statusFilter, classFilter, paymentFilter, membershipByMemberId]);
+  const [shown, setShown] = useState(PAGE_SIZE);
+  const [importing, setImporting] = useState(false);
+  useEffect(() => {
+    setShown(PAGE_SIZE);
+  }, [query, statusFilter, classFilter, paymentFilter, people.length]);
+  const pagedPeople = visiblePeople.slice(0, shown);
 
   const submit = () => {
     if (!form.first_name.trim() || !form.last_name.trim()) return;
@@ -3084,59 +3197,100 @@ function Members({
 
   const importBackup = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file) return;
-    void file.text().then((content) => {
-      const backup = JSON.parse(content) as {
-        members?: Member[];
-        memberships?: Membership[];
-        payments?: GymPayment[];
-      };
-      void (async () => {
+    event.target.value = "";
+    if (!file || importing) return;
+    const maxBytes = 4 * 1024 * 1024;
+    const maxRows = 1500;
+    if (file.size > maxBytes) {
+      window.alert(t("backup.tooBig"));
+      return;
+    }
+    if (!window.confirm(t("backup.confirm"))) return;
+    void (async () => {
+      setImporting(true);
+      try {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(await file.text());
+        } catch {
+          window.alert(t("backup.invalid"));
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          window.alert(t("backup.invalid"));
+          return;
+        }
+        const backup = parsed as Record<string, unknown>;
+        const membersIn = Array.isArray(backup.members) ? backup.members : [];
+        const membershipsIn = Array.isArray(backup.memberships) ? backup.memberships : [];
+        const paymentsIn = Array.isArray(backup.payments) ? backup.payments : [];
+        if (!membersIn.length) {
+          window.alert(t("backup.invalid"));
+          return;
+        }
+        if (membersIn.length > maxRows || membershipsIn.length > maxRows || paymentsIn.length > maxRows) {
+          window.alert(t("backup.tooBig"));
+          return;
+        }
         const idMap = new Map<number, number>();
-        for (const member of backup.members || []) {
-          const names = member.name.trim().split(/\s+/);
+        for (const raw of membersIn) {
+          if (!raw || typeof raw !== "object") continue;
+          const member = raw as Record<string, unknown>;
+          const oldId = asPositiveId(member.id);
+          const name = clipText(member.name, 120);
+          const names = name.split(/\s+/).filter(Boolean);
           const created = await gymApi.createMember({
             first_name: names[0] || "Member",
             last_name: names.slice(1).join(" ") || "Restored",
-            phone: member.phone || "",
-            email: member.email || "",
-            id_number: member.id_number || `RESTORED${member.id}`,
-            address: member.address || "Restored from backup",
-            city: member.city || "",
-            country: member.country || "Morocco",
-            postal_code: member.postal_code || "",
+            phone: clipText(member.phone, 40),
+            email: clipText(member.email, 120),
+            id_number: clipText(member.id_number, 40) || (oldId ? `RESTORED${oldId}` : `RESTORED${Date.now()}`),
+            address: clipText(member.address, 200) || "Restored from backup",
+            city: clipText(member.city, 80),
+            country: clipText(member.country, 80) || "Morocco",
+            postal_code: clipText(member.postal_code, 20),
           });
-          idMap.set(member.id, created.id);
+          if (oldId) idMap.set(oldId, created.id);
         }
         const membershipMap = new Map<number, number>();
-        for (const membership of backup.memberships || []) {
-          const memberId = idMap.get(membership.member_id);
-          if (!memberId) continue;
+        for (const raw of membershipsIn) {
+          if (!raw || typeof raw !== "object") continue;
+          const membership = raw as Record<string, unknown>;
+          const oldMemberId = asPositiveId(membership.member_id);
+          const memberId = oldMemberId ? idMap.get(oldMemberId) : undefined;
+          const planId = asPositiveId(membership.plan_id);
+          const startDate = clipText(membership.start_date, 32);
+          if (!memberId || !planId || !/^\d{4}-\d{2}-\d{2}/.test(startDate)) continue;
           const restored = await gymApi.createMembership({
             member_id: memberId,
-            plan_id: membership.plan_id,
-            start_date: membership.start_date,
-            notes: membership.notes || "Restored from backup",
+            plan_id: planId,
+            start_date: startDate.slice(0, 10),
+            notes: clipText(membership.notes, 240) || "Restored from backup",
           });
-          membershipMap.set(membership.id, restored.id);
+          const oldId = asPositiveId(membership.id);
+          if (oldId) membershipMap.set(oldId, restored.id);
         }
-        for (const payment of backup.payments || []) {
-          const membershipId = membershipMap.get(payment.membership_id);
-          if (!membershipId) continue;
+        for (const raw of paymentsIn) {
+          if (!raw || typeof raw !== "object") continue;
+          const payment = raw as Record<string, unknown>;
+          const membershipId = asPositiveId(payment.membership_id)
+            ? membershipMap.get(asPositiveId(payment.membership_id) as number)
+            : undefined;
+          const amount = Number(payment.amount);
+          if (!membershipId || !Number.isFinite(amount) || amount <= 0) continue;
           await gymApi.payment(membershipId, {
-            amount: Number(payment.amount),
-            received_by: payment.received_by || "Admin",
-            notes: payment.notes || "Restored from backup",
+            amount,
+            received_by: clipText(payment.received_by, 80) || "Admin",
+            notes: clipText(payment.notes, 240) || "Restored from backup",
           });
         }
         window.location.reload();
-      })().catch((error) =>
-        window.alert(
-          error instanceof Error ? error.message : "Unable to restore backup.",
-        ),
-      );
-    });
-    event.target.value = "";
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Unable to restore backup.");
+      } finally {
+        setImporting(false);
+      }
+    })();
   };
 
   return (
@@ -3179,9 +3333,9 @@ function Members({
           className={`ledger-stat ${paymentFilter === "unpaid" ? "active" : ""}`}
           onClick={() => setPaymentFilter("unpaid")}
         >
-          <span>Unpaid</span>
+          <span>{t("members.unpaid")}</span>
           <strong>{moneySummary.unpaid}</strong>
-          <small>{moneySummary.partial} partial</small>
+          <small>{moneySummary.partial} {t("status.partial").toLowerCase()}</small>
         </button>
       </div>
       <div className="toolbar">
@@ -3217,12 +3371,12 @@ function Members({
           <option value="expired">Expired</option>
           <option value="none">No membership</option>
         </select>
-        <div className="member-backup-actions">
-          <button type="button" className="secondary" onClick={() => void exportBackup()}>
+        <div className="toolbar-actions">
+          <button type="button" className="secondary" disabled={importing} onClick={() => void exportBackup()}>
             <Download size={15} /> Export
           </button>
-          <button type="button" className="secondary" onClick={() => backupInputRef.current?.click()}>
-            <Upload size={15} /> Import
+          <button type="button" className="secondary" disabled={importing} onClick={() => backupInputRef.current?.click()}>
+            <Upload size={15} /> {importing ? t("backup.busy") : "Import"}
           </button>
           <input
             ref={backupInputRef}
@@ -3231,10 +3385,10 @@ function Members({
             hidden
             onChange={importBackup}
           />
+          <button className="primary" onClick={() => setOpen(true)}>
+            <Plus size={16} /> {t("members.add")}
+          </button>
         </div>
-        <button className="primary" onClick={() => setOpen(true)}>
-          <Plus size={16} /> {t("members.add")}
-        </button>
       </div>
       {open && (
         <section className="panel form-panel member-form">
@@ -3387,10 +3541,11 @@ function Members({
             </label>
           </div>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setOpen(false)}>
+            <button type="button" className="secondary" onClick={() => setOpen(false)}>
               Cancel
             </button>
             <button
+              type="button"
               className="primary"
               onClick={submit}
               disabled={!form.first_name.trim() || !form.last_name.trim() || !form.id_number.trim() || !form.address.trim()}
@@ -3414,7 +3569,7 @@ function Members({
             </tr>
           </thead>
           <tbody>
-            {visiblePeople.map((member) => {
+            {pagedPeople.map((member) => {
               const membership = membershipFor(member.id);
               const memberStatus = memberStatuses[member.id];
               const remaining = Number(membership?.remaining_balance || 0);
@@ -3426,7 +3581,7 @@ function Members({
                     : "inactive";
               return (
                 <tr key={member.id} onClick={() => showMemberDetails(member)}>
-                  <td>
+                  <td data-label={t("dash.member")}>
                     <span
                       className={`member-status-dot ${dotClass}`}
                       title={memberStatus || "No membership"}
@@ -3437,25 +3592,26 @@ function Members({
                       {member.phone ? ` · ${member.phone}` : ""}
                     </small>
                   </td>
-                  <td>{member.class_name || "No class"}</td>
-                  <td>{membership ? money(membership.price) : "—"}</td>
-                  <td>{membership ? money(membership.total_paid) : "—"}</td>
-                  <td className="table-money">
+                  <td data-label={t("members.class")}>{member.class_name || "No class"}</td>
+                  <td data-label={t("members.price")}>{membership ? money(membership.price) : "—"}</td>
+                  <td data-label={t("members.paidCol")}>{membership ? money(membership.total_paid) : "—"}</td>
+                  <td className="table-money" data-label={t("members.stillOwes")}>
                     <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
                       {membership ? (remaining > 0 ? money(remaining) : "Settled") : "—"}
                     </strong>
                   </td>
-                  <td>
+                  <td data-label={t("members.payment")}>
                     {membership ? (
                       <Badge value={membership.payment_status} payment />
                     ) : (
                       <span className="status expired">No plan</span>
                     )}
                   </td>
-                  <td>
+                  <td data-label={t("common.actions")}>
                     <div className="table-actions">
                       {membership ? (
                         <button
+                          type="button"
                           className="text-button"
                           onClick={(event) => {
                             event.stopPropagation();
@@ -3470,7 +3626,14 @@ function Members({
                         </button>
                       ) : null}
                       <button
+                        type="button"
                         className="text-button"
+                        disabled={memberStatus !== "active" && memberStatus !== "expiring_soon"}
+                        title={
+                          memberStatus === "active" || memberStatus === "expiring_soon"
+                            ? undefined
+                            : t("att.required")
+                        }
                         onClick={(event) => {
                           event.stopPropagation();
                           onCheckIn(member.id);
@@ -3485,6 +3648,7 @@ function Members({
             })}
           </tbody>
         </table>
+        <LoadMoreBar shown={shown} total={visiblePeople.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visiblePeople.length && (
           <div className="empty">
             {people.length ? "No members match these filters." : "No members found."}
@@ -3823,6 +3987,11 @@ function Memberships({
       return true;
     });
   }, [items, paymentFilter]);
+  const [shown, setShown] = useState(PAGE_SIZE);
+  useEffect(() => {
+    setShown(PAGE_SIZE);
+  }, [query, status, paymentFilter, items.length]);
+  const pagedItems = visibleItems.slice(0, shown);
   const [renewId, setRenewId] = useState<number | null>(null);
   const [renewForm, setRenewForm] = useState({
     plan_id: "",
@@ -3981,9 +4150,9 @@ function Memberships({
           className={`ledger-stat ${paymentFilter === "unpaid" ? "active" : ""}`}
           onClick={() => setPaymentFilter("unpaid")}
         >
-          <span>Unpaid</span>
+          <span>{t("members.unpaid")}</span>
           <strong>{moneySummary.unpaid}</strong>
-          <small>{moneySummary.partial} partial</small>
+          <small>{moneySummary.partial} {t("status.partial").toLowerCase()}</small>
         </button>
       </div>
       <div className="toolbar">
@@ -4071,30 +4240,30 @@ function Memberships({
             </tr>
           </thead>
           <tbody>
-            {visibleItems.map((item) => {
+            {pagedItems.map((item) => {
               const remaining = Number(item.remaining_balance || 0);
               return (
               <tr key={item.id} onClick={() => showMembershipDetails(item)}>
-                <td>
+                <td data-label={t("dash.member")}>
                   {memberName(item.member_id)}
                   <small>{item.status.replace("_", " ")}</small>
                 </td>
-                <td>{planName(item.plan_id)}</td>
-                <td>
+                <td data-label={t("memberships.plan")}>{planName(item.plan_id)}</td>
+                <td data-label={t("memberships.period")}>
                   {date(item.start_date)}
                   <small>to {date(item.end_date)}</small>
                 </td>
-                <td>{money(item.price)}</td>
-                <td>{money(item.total_paid)}</td>
-                <td className="table-money">
+                <td data-label={t("members.price")}>{money(item.price)}</td>
+                <td data-label={t("members.paidCol")}>{money(item.total_paid)}</td>
+                <td className="table-money" data-label={t("members.stillOwes")}>
                   <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
                     {remaining > 0 ? money(remaining) : "Settled"}
                   </strong>
                 </td>
-                <td>
+                <td data-label={t("members.payment")}>
                   <Badge value={item.payment_status} payment />
                 </td>
-                <td>
+                <td data-label={t("common.actions")}>
                   <div className="table-actions">
                     <button
                       className="text-button"
@@ -4134,6 +4303,7 @@ function Memberships({
             })}
           </tbody>
         </table>
+        <LoadMoreBar shown={shown} total={visibleItems.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visibleItems.length && (
           <div className="empty">
             {items.length ? "No memberships match these filters." : "No memberships found."}
@@ -4431,14 +4601,6 @@ function Plans({
   );
 }
 
-function membershipForMember(memberships: Membership[], memberId: number) {
-  const items = memberships.filter((item) => item.member_id === memberId);
-  return (
-    items.find((item) => item.status === "active" || item.status === "expiring_soon") ||
-    items[0]
-  );
-}
-
 function localDay(value: string) {
   const stamp = new Date(value);
   return `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, "0")}-${String(stamp.getDate()).padStart(2, "0")}`;
@@ -4486,6 +4648,7 @@ function GymPayments({
     members.forEach((item) => map.set(item.id, item));
     return map;
   }, [members]);
+  const membershipByMemberId = useMemo(() => indexLatestMembership(memberships), [memberships]);
 
   const labelFor = (payment: GymPayment) => {
     if (payment.member_name) return payment.member_name;
@@ -4495,7 +4658,7 @@ function GymPayments({
   };
 
   const selected = members.find((item) => item.id === selectedId) || null;
-  const selectedMembership = selected ? membershipForMember(memberships, selected.id) : undefined;
+  const selectedMembership = selected ? membershipByMemberId.get(selected.id) : undefined;
   const selectedRemaining = Number(selectedMembership?.remaining_balance || 0);
 
   const owing = useMemo(() => {
@@ -4538,6 +4701,11 @@ function GymPayments({
       return haystack.includes(needle);
     });
   }, [payments, period, year, month, historyQuery, membershipById, memberById, todayKey]);
+  const [shown, setShown] = useState(PAGE_SIZE);
+  useEffect(() => {
+    setShown(PAGE_SIZE);
+  }, [period, selectedMonth, historyQuery, payments.length]);
+  const pagedPayments = visiblePayments.slice(0, shown);
 
   const localMatches = (value: string) => {
     const needle = value.trim().toLowerCase();
@@ -4642,7 +4810,7 @@ function GymPayments({
       {Boolean(matches.length) && (
         <section className="panel desk-matches">
           {matches.map((member) => {
-            const membership = membershipForMember(memberships, member.id);
+            const membership = membershipByMemberId.get(member.id);
             const remaining = Number(membership?.remaining_balance || 0);
             return (
               <button
@@ -4844,7 +5012,7 @@ function GymPayments({
             </tr>
           </thead>
           <tbody>
-            {visiblePayments.map((payment) => {
+            {pagedPayments.map((payment) => {
               const receipt = payment.receipt_number || `FO-${String(payment.id).padStart(6, "0")}`;
               return (
                 <tr key={payment.id}>
@@ -4885,6 +5053,7 @@ function GymPayments({
             })}
           </tbody>
         </table>
+        <LoadMoreBar shown={shown} total={visiblePayments.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visiblePayments.length && (
           <div className="empty">{payments.length ? t("cash.emptyFilter") : t("cash.empty")}</div>
         )}
@@ -4920,15 +5089,28 @@ function AttendancePage({
     searchRef.current?.focus();
   }, []);
 
-  const insideVisit = (memberId: number) =>
-    records.find((item) => item.member_id === memberId && (item.is_inside ?? !item.checked_out_at));
+  const memberById = useMemo(() => {
+    const map = new Map<number, Member>();
+    for (const member of members) map.set(member.id, member);
+    return map;
+  }, [members]);
+  const insideByMember = useMemo(() => {
+    const map = new Map<number, Attendance>();
+    for (const item of records) {
+      if (item.is_inside ?? !item.checked_out_at) map.set(item.member_id, item);
+    }
+    return map;
+  }, [records]);
+  const enterableIds = useMemo(() => {
+    const set = new Set<number>();
+    for (const item of memberships) {
+      if (item.status === "active" || item.status === "expiring_soon") set.add(item.member_id);
+    }
+    return set;
+  }, [memberships]);
 
-  const canEnter = (memberId: number) =>
-    memberships.some(
-      (item) =>
-        item.member_id === memberId &&
-        (item.status === "active" || item.status === "expiring_soon"),
-    );
+  const insideVisit = (memberId: number) => insideByMember.get(memberId);
+  const canEnter = (memberId: number) => enterableIds.has(memberId);
 
   const cardFor = (member: { id: number; card_code?: string }) =>
     member.card_code || `FO-${String(member.id).padStart(6, "0")}`;
@@ -4941,6 +5123,16 @@ function AttendancePage({
   const selectedCanEnter = selected ? canEnter(selected.id) : false;
 
   const inside = records.filter((item) => item.is_inside ?? !item.checked_out_at);
+  const [shownInside, setShownInside] = useState(PAGE_SIZE);
+  const [shownVisits, setShownVisits] = useState(PAGE_SIZE);
+  useEffect(() => {
+    setShownInside(PAGE_SIZE);
+    setShownVisits(PAGE_SIZE);
+  }, [records.length]);
+  const pagedInside = inside.slice(0, shownInside);
+  const pagedVisits = records.slice(0, shownVisits);
+  const visitName = (item: Attendance) =>
+    item.member_name || memberById.get(item.member_id)?.name || `#${item.member_id}`;
   const checkouts = records.filter((item) => item.checked_out_at).length;
   const headcount = [
     ...classes.map((item) => ({
@@ -5126,7 +5318,7 @@ function AttendancePage({
         </section>
       )}
       <div className="ledger-stats desk-stats">
-        <div className="ledger-stat">
+        <div className="ledger-stat featured">
           <span>{t("att.inside")}</span>
           <strong>{inside.length}</strong>
           <small>{t("att.now")}</small>
@@ -5146,60 +5338,104 @@ function AttendancePage({
         <div className="panel-heading desk-heading">
           <h3>{t("att.byClass")}</h3>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>{t("nav.classes")}</th>
-              <th>{t("att.now")}</th>
-              <th>{t("att.todayCount")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {headcount.map((item) => (
-              <tr key={item.class_id ?? "none"}>
-                <td>{item.class_name}</td>
-                <td>{item.inside}</td>
-                <td>{item.checkins}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!headcount.length && <div className="empty">{t("att.empty")}</div>}
+        {headcount.length ? (
+          <>
+            <ul className="phone-list">
+              {headcount.map((item) => (
+                <li className="phone-row" key={item.class_id ?? "none"}>
+                  <strong>{item.class_name}</strong>
+                  <div className="phone-meta">
+                    <span>{t("att.now")} <b>{item.inside}</b></span>
+                    <span>{t("att.todayCount")} <b>{item.checkins}</b></span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("nav.classes")}</th>
+                  <th>{t("att.now")}</th>
+                  <th>{t("att.todayCount")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {headcount.map((item) => (
+                  <tr key={item.class_id ?? "none"}>
+                    <td>{item.class_name}</td>
+                    <td>{item.inside}</td>
+                    <td>{item.checkins}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <div className="empty">{t("att.empty")}</div>
+        )}
       </section>
       <section className="panel table-wrap">
         <div className="panel-heading desk-heading">
           <h3>{t("att.inList")}</h3>
         </div>
         {inside.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>{t("att.inAt")}</th>
-                <th>{t("nav.members")}</th>
-                <th>{t("nav.classes")}</th>
-                <th>{t("att.card")}</th>
-                <th>{t("common.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {inside.map((item) => (
-                <tr key={item.id}>
-                  <td>{clock(item.checked_in_at)}</td>
-                  <td>
-                    {item.member_name || members.find((member) => member.id === item.member_id)?.name || `#${item.member_id}`}
-                    {item.phone ? <small>{item.phone}</small> : null}
-                  </td>
-                  <td>{item.class_name || t("att.noClass")}</td>
-                  <td>{item.card_code || cardFor({ id: item.member_id })}</td>
-                  <td>
-                    <button className="text-button" type="button" onClick={() => void onCheckOut(item.member_id)}>
+          <>
+            <ul className="phone-list">
+              {pagedInside.map((item) => (
+                  <li className="phone-row phone-row-action" key={item.id}>
+                    <div className="phone-row-main">
+                      <strong>{visitName(item)}</strong>
+                      <small>
+                        {clock(item.checked_in_at)}
+                        {item.phone ? ` · ${item.phone}` : ""}
+                      </small>
+                      <small>
+                        {item.class_name || t("att.noClass")}
+                        {" · "}
+                        {item.card_code || cardFor({ id: item.member_id })}
+                      </small>
+                    </div>
+                    <button
+                      className="primary"
+                      type="button"
+                      onClick={() => void onCheckOut(item.member_id)}
+                    >
                       {t("att.checkOut")}
                     </button>
-                  </td>
-                </tr>
+                  </li>
               ))}
-            </tbody>
-          </table>
+            </ul>
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("att.inAt")}</th>
+                  <th>{t("nav.members")}</th>
+                  <th>{t("nav.classes")}</th>
+                  <th>{t("att.card")}</th>
+                  <th>{t("common.actions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedInside.map((item) => (
+                  <tr key={item.id}>
+                    <td>{clock(item.checked_in_at)}</td>
+                    <td>
+                      {visitName(item)}
+                      {item.phone ? <small>{item.phone}</small> : null}
+                    </td>
+                    <td>{item.class_name || t("att.noClass")}</td>
+                    <td>{item.card_code || cardFor({ id: item.member_id })}</td>
+                    <td>
+                      <button className="text-button" type="button" onClick={() => void onCheckOut(item.member_id)}>
+                        {t("att.checkOut")}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <LoadMoreBar shown={shownInside} total={inside.length} onMore={() => setShownInside((n) => n + PAGE_SIZE)} />
+          </>
         ) : (
           <div className="empty">{t("att.emptyIn")}</div>
         )}
@@ -5209,28 +5445,41 @@ function AttendancePage({
           <h3>{t("att.visits")}</h3>
         </div>
         {records.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>{t("att.inAt")}</th>
-                <th>{t("att.outAt")}</th>
-                <th>{t("nav.members")}</th>
-                <th>{t("nav.classes")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((item) => (
-                <tr key={item.id}>
-                  <td>{clock(item.checked_in_at)}</td>
-                  <td>{item.checked_out_at ? clock(item.checked_out_at) : "—"}</td>
-                  <td>
-                    {item.member_name || members.find((member) => member.id === item.member_id)?.name || `#${item.member_id}`}
-                  </td>
-                  <td>{item.class_name || t("att.noClass")}</td>
-                </tr>
+          <>
+            <ul className="phone-list">
+              {pagedVisits.map((item) => (
+                  <li className="phone-row" key={item.id}>
+                    <strong>{visitName(item)}</strong>
+                    <small>{item.class_name || t("att.noClass")}</small>
+                    <div className="phone-meta">
+                      <span>{t("att.inAt")} <b>{clock(item.checked_in_at)}</b></span>
+                      <span>{t("att.outAt")} <b>{item.checked_out_at ? clock(item.checked_out_at) : "—"}</b></span>
+                    </div>
+                  </li>
               ))}
-            </tbody>
-          </table>
+            </ul>
+            <table>
+              <thead>
+                <tr>
+                  <th>{t("att.inAt")}</th>
+                  <th>{t("att.outAt")}</th>
+                  <th>{t("nav.members")}</th>
+                  <th>{t("nav.classes")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedVisits.map((item) => (
+                  <tr key={item.id}>
+                    <td>{clock(item.checked_in_at)}</td>
+                    <td>{item.checked_out_at ? clock(item.checked_out_at) : "—"}</td>
+                    <td>{visitName(item)}</td>
+                    <td>{item.class_name || t("att.noClass")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <LoadMoreBar shown={shownVisits} total={records.length} onMore={() => setShownVisits((n) => n + PAGE_SIZE)} />
+          </>
         ) : (
           <div className="empty">{t("att.empty")}</div>
         )}
