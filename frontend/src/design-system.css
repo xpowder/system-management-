@@ -984,6 +984,13 @@ html[data-theme="dark"] .ledger-stat.featured{
 }
 @media(max-width:900px){
   :root{--page-pad:20px;--title:20px}
+  .dashboard-split{grid-template-columns:1fr}
+  .dash-row{
+    padding:12px 16px;
+    min-height:56px;
+    gap:8px 10px;
+  }
+  .dash-row-go{display:none}
   .stats-grid,
   .stats-grid.reports-stats,
   .ledger-stats,
@@ -1490,12 +1497,23 @@ html[data-theme="dark"] .ledger-stat.featured{
   .table-wrap tr.record-card-reminder .record-pay{
     display:none !important;
   }
-  .table-wrap tr.record-card-reminder .whatsapp-button,
-  .table-wrap tr.record-card-reminder .table-actions .text-button{
+  .table-wrap tr.record-card-reminder .record-actions{
+    grid-column:1/-1;
+    grid-row:3;
+    padding-top:10px !important;
+  }
+  .table-wrap tr.record-card-reminder .reminder-actions{
+    width:100%;
+    justify-content:stretch;
+    gap:8px;
+  }
+  .table-wrap tr.record-card-reminder .reminder-actions .whatsapp-button,
+  .table-wrap tr.record-card-reminder .reminder-actions .reminder-copy{
     flex:1;
-    height:40px;
-    min-height:40px;
-    justify-content:center;
+    width:auto;
+    min-width:0;
+    height:44px;
+    min-height:44px;
   }
   .table-wrap tr.record-card-user .record-plan{
     grid-column:1;
@@ -2093,7 +2111,6 @@ html[data-theme="dark"] .ledger-stat.featured{
 }
 .reminders-page .reminder-panel .record-owing{
   text-align:left;
-  white-space:nowrap;
 }
 .reminders-page .reminder-panel .record-actions{
   width:1%;
@@ -2412,26 +2429,48 @@ html[data-theme="dark"] .ledger-stat.featured{
     font-size:16px;
     margin:0;
   }
+  .reminders-page .reminder-panel{
+    overflow:hidden;
+  }
+  .reminders-page .reminder-panel table{
+    min-width:0;
+  }
   .reminders-page .reminder-send-bar{
     position:sticky;
     top:56px;
     z-index:2;
+    flex-direction:column;
+    align-items:stretch;
     padding:10px 12px;
+    gap:8px;
   }
-  .reminders-page .reminder-send-bar small{width:100%}
+  .reminders-page .reminder-send-bar small{
+    width:100%;
+    font-size:12px;
+  }
+  .reminders-page .reminder-send-copy{
+    width:100%;
+  }
   .reminders-page .reminder-send-actions{
     width:100%;
     margin-left:0;
+    display:flex;
+    gap:8px;
   }
   .reminders-page .reminder-send-actions .whatsapp-button,
   .reminders-page .reminder-send-actions .secondary,
   .reminders-page .reminder-send-actions .text-button{
     flex:1;
+    height:44px;
+    min-height:44px;
     justify-content:center;
   }
   .reminders-page .record-check input{
     width:20px;
     height:20px;
+  }
+  .reminders-page .reminder-panel .record-owing{
+    white-space:normal;
   }
   .table-wrap tr.record-card-member .record-price,
   .table-wrap tr.record-card-member .record-paid,

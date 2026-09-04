@@ -252,7 +252,7 @@ export const gymApi = {
   downloadMonthlyReport: (year: number, month: number, format: 'xlsx' | 'pdf') =>
     downloadFile(
       `/fitness/reports/export/${format}?year=${year}&month=${month}`,
-      `flexoper-monthly-report-${year}-${String(month).padStart(2, '0')}.${format}`,
+      `AUMB-monthly-report-${year}-${String(month).padStart(2, '0')}.${format}`,
     ),
   expenses: (year: number, month: number) => request<GymExpense[]>(`/fitness/expenses?year=${year}&month=${month}`),
   createExpense: (payload: { category: string; title?: string; amount: number | string; year?: number; month?: number; notes?: string }) => request<GymExpense>('/fitness/expenses', { method: 'POST', body: JSON.stringify(payload) }),
@@ -296,10 +296,10 @@ export const gymApi = {
   downloadCashLog: (year: number, month: number, format: 'xlsx' | 'pdf') =>
     downloadFile(
       `/fitness/payments/export/${format}?year=${year}&month=${month}`,
-      `flexoper-cash-log-${year}-${String(month).padStart(2, '0')}.${format}`,
+      `AUMB-cash-log-${year}-${String(month).padStart(2, '0')}.${format}`,
     ),
   downloadPaymentReceipt: (id: number) =>
-    downloadFile(`/fitness/payments/${id}/receipt`, `flexoper-receipt-FO-${String(id).padStart(6, '0')}.pdf`),
+    downloadFile(`/fitness/payments/${id}/receipt`, `AUMB-receipt-FO-${String(id).padStart(6, '0')}.pdf`),
   openPaymentReceipt: async (id: number) => {
     try {
       const token = csrfToken()
@@ -313,7 +313,7 @@ export const gymApi = {
       const html = await response.text()
       const win = window.open('', '_blank', 'noopener,noreferrer')
       if (!win) {
-        await downloadFile(`/fitness/payments/${id}/receipt`, `flexoper-receipt-FO-${String(id).padStart(6, '0')}.pdf`)
+        await downloadFile(`/fitness/payments/${id}/receipt`, `AUMB-receipt-FO-${String(id).padStart(6, '0')}.pdf`)
         return
       }
       const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }))

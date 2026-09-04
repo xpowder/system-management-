@@ -3450,7 +3450,7 @@ function Members({
     link.href = URL.createObjectURL(
       new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }),
     );
-    link.download = `homezup-gym-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `AUMB-gym-backup-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(link.href);
   };
