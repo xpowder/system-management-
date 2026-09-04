@@ -13,18 +13,13 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
-# Metal hosts report dozens of CPUs; one worker is enough for this SPA.
-RUN sed -i 's/^worker_processes.*/worker_processes 1;/' /etc/nginx/nginx.conf
-
 ENV PORT=80 \
     BACKEND_URL=http://backend:8000 \
     NGINX_LOCAL_RESOLVERS=8.8.8.8 \
     NGINX_ENVSUBST_FILTER=PORT|BACKEND_URL|NGINX_LOCAL_RESOLVERS \
     NGINX_ENTRYPOINT_WORKER_PROCESSES_AUTOTUNE=
-# Railway: set BACKEND_URL to the Django service, e.g.
-# http://${{Django.RAILWAY_PRIVATE_DOMAIN}}:${{Django.PORT}}
-# or https://your-django.up.railway.app
 
+COPY frontend/nginx.main.conf /etc/nginx/nginx.conf
 COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 
