@@ -1847,48 +1847,53 @@ function RemindersPage() {
           <div className="reminder-phone-list">
             {pagedItems.map((item) => (
               <article
-                className={`reminder-phone-card${selected.has(item.membership_id) ? " is-selected" : ""}`}
+                className={`reminder-phone-card${selected.has(item.membership_id) ? " is-selected" : ""}${canSend(item) ? "" : " is-locked"}`}
                 key={`phone-${item.membership_id}`}
+                role="button"
+                tabIndex={canSend(item) ? 0 : -1}
+                aria-pressed={selected.has(item.membership_id)}
+                aria-label={t("remind.selectMember", { name: item.member_name })}
+                onClick={() => {
+                  if (canSend(item)) toggleSelected(item.membership_id);
+                }}
+                onKeyDown={(event) => {
+                  if (!canSend(item)) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggleSelected(item.membership_id);
+                  }
+                }}
               >
                 <header className="reminder-phone-head">
-                  <label className="reminder-phone-check">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(item.membership_id)}
-                      disabled={!canSend(item)}
-                      onChange={() => toggleSelected(item.membership_id)}
-                      aria-label={t("remind.selectMember", { name: item.member_name })}
-                    />
-                  </label>
-                  <div className="reminder-phone-who">
-                    <strong className="reminder-phone-name">{item.member_name}</strong>
-                    <div className="reminder-phone-tags">
-                      {item.reasons.map((reason) => (
-                        <span className={`status ${reason === "unpaid" || reason === "expired" ? "unpaid" : "partial"}`} key={reason}>
-                          {reasonLabel(reason, t)}
-                        </span>
-                      ))}
-                    </div>
+                  <strong className="reminder-phone-name">{item.member_name}</strong>
+                  <div className="reminder-phone-tags">
+                    {item.reasons.map((reason) => (
+                      <span className={`status ${reason === "unpaid" || reason === "expired" ? "unpaid" : "partial"}`} key={reason}>
+                        {reasonLabel(reason, t)}
+                      </span>
+                    ))}
                   </div>
                 </header>
                 <div className="reminder-phone-body">
                   <p className="reminder-phone-number">{item.phone || t("common.noPhone")}</p>
-                  <p className="reminder-phone-amount">
-                    {Number(item.remaining) > 0 ? (
-                      <strong className="amount-owing">{money(item.remaining)}</strong>
-                    ) : (
-                      <span className="amount-settled">{money(0)}</span>
-                    )}
-                  </p>
-                  <p className="reminder-phone-when">
-                    {date(item.end_date)}
-                    {" · "}
-                    {item.days_left >= 0
-                      ? t(item.days_left === 1 ? "remind.daysLeft" : "remind.daysLeftPlural", { n: item.days_left })
-                      : t(Math.abs(item.days_left) === 1 ? "remind.daysAgo" : "remind.daysAgoPlural", { n: Math.abs(item.days_left) })}
-                  </p>
+                  <div className="reminder-phone-row">
+                    <p className="reminder-phone-when">
+                      {date(item.end_date)}
+                      {" · "}
+                      {item.days_left >= 0
+                        ? t(item.days_left === 1 ? "remind.daysLeft" : "remind.daysLeftPlural", { n: item.days_left })
+                        : t(Math.abs(item.days_left) === 1 ? "remind.daysAgo" : "remind.daysAgoPlural", { n: Math.abs(item.days_left) })}
+                    </p>
+                    <p className="reminder-phone-amount">
+                      {Number(item.remaining) > 0 ? (
+                        <strong className="amount-owing">{money(item.remaining)}</strong>
+                      ) : (
+                        <span className="amount-settled">{money(0)}</span>
+                      )}
+                    </p>
+                  </div>
                 </div>
-                <div className="reminder-phone-actions">
+                <div className="reminder-phone-actions" onClick={(event) => event.stopPropagation()}>
                   {item.whatsapp_url ? (
                     <button
                       type="button"
