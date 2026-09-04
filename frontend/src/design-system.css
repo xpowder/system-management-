@@ -2646,3 +2646,123 @@ select{
   .field-grid,
   .date-fields{grid-template-columns:1fr}
 }
+
+/* Reminders: phone cards. Desktop table stays as-is. */
+@media(max-width:900px){
+  .reminders-page .reminder-panel,
+  .reminders-page .reminder-panel table,
+  .reminders-page .reminder-panel tbody{
+    display:block;
+    width:100%;
+    min-width:0;
+  }
+  .reminders-page .reminder-panel thead{
+    display:none !important;
+  }
+  .reminders-page .reminder-panel tbody tr.record-card-reminder{
+    display:grid !important;
+    grid-template-columns:32px minmax(0,1fr) auto;
+    grid-template-areas:
+      "check name owing"
+      ". date date"
+      "act act act";
+    align-items:start;
+    gap:8px 10px;
+    width:100%;
+    margin:0;
+    padding:14px 14px 12px;
+    border-bottom:1px solid var(--line);
+    box-sizing:border-box;
+  }
+  .reminders-page .reminder-panel tbody tr.record-card-reminder td{
+    display:flex !important;
+    flex-direction:column;
+    align-items:flex-start;
+    width:auto;
+    padding:0 !important;
+    border:0 !important;
+  }
+  .reminders-page .reminder-panel tbody tr.record-card-reminder td::before{
+    display:none !important;
+  }
+  .reminders-page .reminder-panel .record-check{
+    grid-area:check;
+    align-items:center;
+    justify-content:center;
+    padding-top:2px !important;
+  }
+  .reminders-page .reminder-panel .record-name{
+    grid-area:name;
+    min-width:0;
+  }
+  .reminders-page .reminder-panel .record-name strong{
+    font-size:15px;
+  }
+  .reminders-page .reminder-panel .record-name .status{
+    display:inline-flex !important;
+    margin:6px 6px 0 0;
+  }
+  .reminders-page .reminder-panel .record-owing{
+    grid-area:owing;
+    align-items:flex-end;
+    text-align:right;
+    justify-self:end;
+  }
+  .reminders-page .reminder-panel .record-owing strong,
+  .reminders-page .reminder-panel .record-owing .amount-settled{
+    font-size:16px;
+    font-variant-numeric:tabular-nums;
+  }
+  .reminders-page .reminder-panel .record-period{
+    grid-area:date;
+    flex-direction:row;
+    flex-wrap:wrap;
+    align-items:baseline;
+    gap:6px;
+    color:var(--muted);
+    font-size:12px;
+    font-weight:500;
+  }
+  .reminders-page .reminder-panel .record-period small{
+    margin:0;
+  }
+  .reminders-page .reminder-panel .record-plan,
+  .reminders-page .reminder-panel .record-pay{
+    display:none !important;
+  }
+  .reminders-page .reminder-panel .record-actions{
+    grid-area:act;
+    width:100%;
+    padding-top:4px !important;
+  }
+  .reminders-page .reminder-actions{
+    width:100%;
+    display:flex;
+    justify-content:stretch;
+    gap:8px;
+  }
+  .reminders-page .reminder-actions .whatsapp-button,
+  .reminders-page .reminder-actions .reminder-copy{
+    flex:1;
+    width:auto;
+    min-width:0;
+    height:44px;
+    min-height:44px;
+  }
+  .reminders-page .reminder-send-bar{
+    flex-direction:column;
+    align-items:stretch;
+    gap:8px;
+  }
+  .reminders-page .reminder-send-actions{
+    width:100%;
+    margin-left:0;
+  }
+  .reminders-page .reminder-send-actions .whatsapp-button,
+  .reminders-page .reminder-send-actions .secondary{
+    flex:1;
+    height:44px;
+    min-height:44px;
+    justify-content:center;
+  }
+}
