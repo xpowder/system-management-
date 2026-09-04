@@ -2026,14 +2026,17 @@ html[data-theme="dark"] .ledger-stat.featured{
 .notification-dropdown.is-compact .notification-action-tools{
   display:none;
 }
+.reminder-panel{
+  overflow:hidden;
+}
 .reminder-send-bar{
   display:flex;
   flex-wrap:wrap;
   align-items:center;
   gap:10px 12px;
   padding:12px 16px;
-  border-top:1px solid var(--line);
-  background:var(--white);
+  border-bottom:1px solid var(--line);
+  background:var(--hover);
 }
 .reminder-select-all{
   display:flex;
@@ -2069,6 +2072,65 @@ html[data-theme="dark"] .ledger-stat.featured{
   margin-left:auto;
 }
 .record-card-reminder.is-selected{background:var(--hover)}
+.reminders-page .reminder-panel th,
+.reminders-page .reminder-panel td{
+  vertical-align:middle;
+}
+.reminders-page .reminder-panel .record-name strong{
+  font-size:14px;
+}
+.reminders-page .reminder-panel .record-name small{
+  display:block;
+  margin-top:3px;
+  color:var(--muted);
+  font-weight:500;
+}
+.reminders-page .reminder-panel .record-period small{
+  display:block;
+  margin-top:3px;
+  color:var(--muted);
+  font-weight:500;
+}
+.reminders-page .reminder-panel .record-owing{
+  text-align:left;
+  white-space:nowrap;
+}
+.reminders-page .reminder-panel .record-actions{
+  width:1%;
+  white-space:nowrap;
+  text-align:left;
+}
+.reminders-page .reminder-actions{
+  justify-content:flex-start;
+  gap:8px;
+}
+.reminders-page .reminder-actions .whatsapp-button,
+.reminders-page .reminder-actions .reminder-copy{
+  width:32px;
+  min-width:32px;
+  height:32px;
+  min-height:32px;
+  padding:0;
+  justify-content:center;
+  background:#1f8b4d;
+  border:0;
+  color:#fff;
+}
+.reminders-page .reminder-actions .whatsapp-button:hover,
+.reminders-page .reminder-actions .reminder-copy:hover{
+  background:#187a42;
+  color:#fff;
+}
+@media(max-width:1100px){
+  .reminders-page .reminder-panel .record-plan,
+  .reminders-page .reminder-panel .record-pay{
+    display:none;
+  }
+  .reminders-page .record-card-reminder .record-name .status{
+    display:inline-flex !important;
+    margin:6px 6px 0 0;
+  }
+}
 .hero-copy{
   min-width:0;
   width:100%;

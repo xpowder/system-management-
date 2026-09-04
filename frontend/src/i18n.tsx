@@ -50,7 +50,7 @@ const en = {
   "page.plans": "Plans",
   "page.reports": "Reports",
   "page.notifications": "Notifications",
-  "hello": "Good morning, {name}",
+  "hello": "Hello, {name}",
   "api.live": "Remote API",
   "api.liveDetail": "Live gym workspace",
   "role.admin": "Administrator",

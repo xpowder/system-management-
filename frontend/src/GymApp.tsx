@@ -9,6 +9,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
+  Copy,
   Download,
   Dumbbell,
   FileSpreadsheet,
@@ -1098,7 +1099,9 @@ export default function GymApp({
         <nav className="sidebar-nav">
           {navGroups.map((group) => (
             <div className="nav-group" key={group.label}>
-              <p className="nav-group-label">{t(group.label)}</p>
+              {group.label !== "nav.group.front" && (
+                <p className="nav-group-label">{t(group.label)}</p>
+              )}
               {group.items.map(([key, Icon]) => (
                 <button
                   key={key}
@@ -1786,13 +1789,7 @@ function RemindersPage() {
           <small>{t("remind.last60")}</small>
         </button>
       </div>
-      <section className="panel table-wrap reports-panel">
-        <div className="reports-panel-head reminder-send-head">
-          <div>
-            <span className="eyebrow">{t("members.eyebrow")}</span>
-            <h3>{t("remind.send")}</h3>
-          </div>
-        </div>
+      <section className="panel table-wrap reports-panel reminder-panel">
         {queue.length > 0 ? (
           <div className="reminder-send-bar is-queue">
             <div className="reminder-send-copy">
@@ -1805,7 +1802,8 @@ function RemindersPage() {
                 {t("remind.skip")}
               </button>
               <button type="button" className="whatsapp-button" disabled={sending} onClick={() => void sendQueueItem()}>
-                <MessageCircle size={14} /> WhatsApp
+                <MessageCircle size={16} />
+                <span>WhatsApp</span>
               </button>
               <button type="button" className="text-button" disabled={sending} onClick={() => { setQueue([]); setQueueIndex(0); }}>
                 {t("remind.cancelSend")}
@@ -1814,15 +1812,6 @@ function RemindersPage() {
           </div>
         ) : items.length > 0 ? (
           <div className="reminder-send-bar">
-            <label className="reminder-select-all">
-              <input
-                type="checkbox"
-                checked={allSendableSelected}
-                disabled={!sendableItems.length}
-                onChange={toggleAll}
-              />
-              <span>{t("remind.selectAll")}</span>
-            </label>
             <small>{t("remind.selected", { n: selectedItems.length })}</small>
             <div className="reminder-send-actions">
               <button
@@ -1831,7 +1820,8 @@ function RemindersPage() {
                 disabled={!selectedItems.length}
                 onClick={() => startQueue(selectedItems)}
               >
-                <MessageCircle size={14} /> {t("remind.sendSelected")}
+                <MessageCircle size={16} />
+                <span>{t("remind.sendSelected")}</span>
               </button>
               <button
                 type="button"
@@ -1865,11 +1855,11 @@ function RemindersPage() {
                   />
                 </th>
                 <th>{t("dash.member")}</th>
-                <th>{t("remind.why")}</th>
+                <th className="record-plan">{t("remind.why")}</th>
                 <th>{t("remind.ends")}</th>
-                <th>{t("remind.stillOwes")}</th>
-                <th>{t("common.phone")}</th>
-                <th>{t("common.actions")}</th>
+                <th className="record-owing">{t("remind.stillOwes")}</th>
+                <th className="record-pay">{t("common.phone")}</th>
+                <th className="record-actions">{t("common.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1922,16 +1912,28 @@ function RemindersPage() {
                   </td>
                   <td className="record-pay" data-label={t("common.phone")}>{item.phone || t("common.noPhone")}</td>
                   <td className="record-actions" data-label={t("common.actions")}>
-                    <div className="table-actions">
+                    <div className="table-actions reminder-actions">
                       {item.whatsapp_url ? (
-                        <button type="button" className="whatsapp-button" onClick={() => void openWhatsApp(item)}>
-                          <MessageCircle size={14} /> WhatsApp
+                        <button
+                          type="button"
+                          className="icon-button whatsapp-button"
+                          onClick={() => void openWhatsApp(item)}
+                          aria-label={t("remind.send")}
+                          title={t("remind.send")}
+                        >
+                          <MessageCircle size={16} />
                         </button>
                       ) : (
                         <span className="status">{t("remind.addPhone")}</span>
                       )}
-                      <button type="button" className="text-button" onClick={() => void copyMessage(item)}>
-                        {t("common.copy")}
+                      <button
+                        type="button"
+                        className="icon-button reminder-copy"
+                        onClick={() => void copyMessage(item)}
+                        aria-label={t("common.copy")}
+                        title={t("common.copy")}
+                      >
+                        <Copy size={16} />
                       </button>
                     </div>
                   </td>
