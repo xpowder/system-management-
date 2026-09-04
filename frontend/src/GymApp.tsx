@@ -60,6 +60,11 @@ type PaymentPayload = {
   remaining?: number;
 };
 
+type OnPayment = (
+  membershipId: number,
+  payload: PaymentPayload,
+) => Promise<GymPayment | void> | void;
+
 function staffDisplayName(user: {
   first_name?: string;
   last_name?: string;
@@ -96,7 +101,7 @@ function openRecordPaymentForm({
 }: {
   memberLabel: string;
   membership: Membership;
-  onPayment: (membershipId: number, payload: PaymentPayload) => Promise<void> | void;
+  onPayment: OnPayment;
 }) {
   document.querySelector(".member-details-overlay")?.remove();
   const overlay = document.createElement("div");
@@ -2660,7 +2665,7 @@ function Members({
     },
   ) => void;
   onDelete: (id: number) => void;
-  onPayment: (membershipId: number, payload: PaymentPayload) => Promise<void> | void;
+  onPayment: OnPayment;
 }) {
   const { t } = useLang();
   const [open, setOpen] = useState(false);
@@ -2672,12 +2677,10 @@ function Members({
     });
     return statuses;
   }, [memberships]);
-  const membershipFor = (memberId: number) => {
+  const membershipFor = (memberId: number): Membership | undefined => {
     const items = memberships.filter((item) => item.member_id === memberId);
-    return (
-      items.find((item) => item.status === "active" || item.status === "expiring_soon") ||
-      items[0]
-    );
+    if (!items.length) return undefined;
+    return items.find((item) => item.status === "active" || item.status === "expiring_soon") ?? items[0];
   };
     const [form, setForm] = useState({
     first_name: "",
@@ -2945,7 +2948,7 @@ function Members({
     heading.textContent = member.name;
     const badges = document.createElement("div");
     badges.className = "membership-details-badges";
-    const membershipStatus = currentMembership?.status || "inactive";
+    const membershipStatus = currentMembership?.status ?? "inactive";
     const statusBadge = document.createElement("span");
     statusBadge.className = `status ${membershipStatus === "inactive" ? "expired" : membershipStatus}`;
     statusBadge.textContent = membershipStatus.replace("_", " ");
@@ -3783,7 +3786,7 @@ function Memberships({
   ) => void;
   onDelete: (id: number) => void;
   onSetPaymentStatus: (membership: Membership, status: "paid" | "unpaid") => void;
-  onPayment: (membershipId: number, payload: PaymentPayload) => Promise<void> | void;
+  onPayment: OnPayment;
 }) {
   const { t } = useLang();
   void onUpdate;
@@ -4450,7 +4453,7 @@ function GymPayments({
   payments: GymPayment[];
   memberships: Membership[];
   members: Member[];
-  onPayment: (membershipId: number, payload: PaymentPayload) => Promise<GymPayment | void> | void;
+  onPayment: OnPayment;
 }) {
   const { t } = useLang();
   const searchRef = useRef<HTMLInputElement>(null);
