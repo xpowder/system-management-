@@ -1812,7 +1812,7 @@ function RemindersPage() {
           </div>
         ) : items.length > 0 ? (
           <div className="reminder-send-bar">
-            <small>{t("remind.selected", { n: selectedItems.length })}</small>
+            <small className="reminder-send-count">{t("remind.selected", { n: selectedItems.length })}</small>
             <div className="reminder-send-actions">
               <button
                 type="button"
@@ -1821,7 +1821,8 @@ function RemindersPage() {
                 onClick={() => startQueue(selectedItems)}
               >
                 <MessageCircle size={16} />
-                <span>{t("remind.sendSelected")}</span>
+                <span className="send-label-full">{t("remind.sendSelected")}</span>
+                <span className="send-label-short">{t("remind.sendShort")}</span>
               </button>
               <button
                 type="button"
@@ -1829,7 +1830,8 @@ function RemindersPage() {
                 disabled={!sendableItems.length}
                 onClick={() => startQueue(sendableItems)}
               >
-                {t("remind.sendAll")}
+                <span className="send-label-full">{t("remind.sendAll")}</span>
+                <span className="send-label-short">{t("remind.allShort")}</span>
               </button>
             </div>
           </div>
@@ -1842,7 +1844,77 @@ function RemindersPage() {
         )}
         {!loading && items.length > 0 && (
           <>
-          <table>
+          <div className="reminder-phone-list">
+            {pagedItems.map((item) => (
+              <article
+                className={`reminder-phone-card${selected.has(item.membership_id) ? " is-selected" : ""}`}
+                key={`phone-${item.membership_id}`}
+              >
+                <header className="reminder-phone-head">
+                  <label className="reminder-phone-check">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(item.membership_id)}
+                      disabled={!canSend(item)}
+                      onChange={() => toggleSelected(item.membership_id)}
+                      aria-label={t("remind.selectMember", { name: item.member_name })}
+                    />
+                  </label>
+                  <div className="reminder-phone-who">
+                    <strong className="reminder-phone-name">{item.member_name}</strong>
+                    <div className="reminder-phone-tags">
+                      {item.reasons.map((reason) => (
+                        <span className={`status ${reason === "unpaid" || reason === "expired" ? "unpaid" : "partial"}`} key={reason}>
+                          {reasonLabel(reason, t)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </header>
+                <div className="reminder-phone-body">
+                  <p className="reminder-phone-number">{item.phone || t("common.noPhone")}</p>
+                  <p className="reminder-phone-amount">
+                    {Number(item.remaining) > 0 ? (
+                      <strong className="amount-owing">{money(item.remaining)}</strong>
+                    ) : (
+                      <span className="amount-settled">{money(0)}</span>
+                    )}
+                  </p>
+                  <p className="reminder-phone-when">
+                    {date(item.end_date)}
+                    {" · "}
+                    {item.days_left >= 0
+                      ? t(item.days_left === 1 ? "remind.daysLeft" : "remind.daysLeftPlural", { n: item.days_left })
+                      : t(Math.abs(item.days_left) === 1 ? "remind.daysAgo" : "remind.daysAgoPlural", { n: Math.abs(item.days_left) })}
+                  </p>
+                </div>
+                <div className="reminder-phone-actions">
+                  {item.whatsapp_url ? (
+                    <button
+                      type="button"
+                      className="whatsapp-button"
+                      onClick={() => void openWhatsApp(item)}
+                    >
+                      <MessageCircle size={16} />
+                      WhatsApp
+                    </button>
+                  ) : (
+                    <span className="status">{t("remind.addPhone")}</span>
+                  )}
+                  <button
+                    type="button"
+                    className="icon-button reminder-copy"
+                    onClick={() => void copyMessage(item)}
+                    aria-label={t("common.copy")}
+                    title={t("common.copy")}
+                  >
+                    <Copy size={16} />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+          <table className="reminder-desktop-table">
             <thead>
               <tr>
                 <th className="record-check">
@@ -1882,8 +1954,8 @@ function RemindersPage() {
                       </span>
                     ))}
                     <small>
-                      {item.phone || t("common.noPhone")}
-                      {item.reminded_today ? ` · ${t("remind.today")}` : ""}
+                      <span className="reminder-phone">{item.phone || t("common.noPhone")}</span>
+                      {item.reminded_today ? <span className="reminder-today"> · {t("remind.today")}</span> : null}
                     </small>
                   </td>
                   <td className="record-plan" data-label={t("remind.why")}>
@@ -1896,7 +1968,7 @@ function RemindersPage() {
                     </div>
                   </td>
                   <td className="record-period" data-label={t("remind.ends")}>
-                    {date(item.end_date)}
+                    <span className="reminder-end">{date(item.end_date)}</span>
                     <small>
                       {item.days_left >= 0
                         ? t(item.days_left === 1 ? "remind.daysLeft" : "remind.daysLeftPlural", { n: item.days_left })
@@ -1922,6 +1994,7 @@ function RemindersPage() {
                           title={t("remind.send")}
                         >
                           <MessageCircle size={16} />
+                          <span className="send-label-phone">WhatsApp</span>
                         </button>
                       ) : (
                         <span className="status">{t("remind.addPhone")}</span>
