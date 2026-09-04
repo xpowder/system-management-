@@ -51,8 +51,10 @@ import {
 } from "./gymApi";
 import { bookingApi, type AdminUser } from "./api";
 import { clock, date, LanguageSwitch, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
+import { EmptyState, Field, FieldGrid, FormSection } from "./ui";
 import { ThemeSwitch } from "./theme";
 import "./App.css";
+import "./design-system.css";
 
 type PaymentPayload = {
   amount: number;
@@ -304,7 +306,7 @@ function Stat({
   const inner = (
     <>
       <div className="stat-icon">
-        <Icon size={18} />
+        <Icon size={16} />
       </div>
       <span>{label}</span>
       <strong>{value}</strong>
@@ -385,6 +387,7 @@ export default function GymApp({
   const { t, lang } = useLang();
   loggedInStaffName = staffDisplayName(currentUser);
   const [today, setToday] = useState(todayLabel)
+  const [todayShort, setTodayShort] = useState(() => todayLabel(true))
   const [notifications, setNotifications] = useState<GymNotification[]>([])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [notificationMenuStyle, setNotificationMenuStyle] = useState<CSSProperties>({})
@@ -415,7 +418,11 @@ export default function GymApp({
   }, [canAdminister, page]);
   useEffect(() => {
     setToday(todayLabel());
-    const timer = window.setInterval(() => setToday(todayLabel()), 60_000)
+    setTodayShort(todayLabel(true));
+    const timer = window.setInterval(() => {
+      setToday(todayLabel());
+      setTodayShort(todayLabel(true));
+    }, 60_000)
     return () => window.clearInterval(timer)
   }, [lang]);
   const refreshNotifications = async () => {
@@ -452,11 +459,14 @@ export default function GymApp({
     setNotificationCompact(compact)
     document.documentElement.classList.toggle("is-compact", compact)
     if (compact) {
-      const left = vp.left + pad
-      const width = Math.max(240, vp.width - pad * 2)
-      const bottom = Math.max(pad, window.innerHeight - (vp.top + vp.height) + pad)
-      const maxHeight = Math.max(220, vp.height - pad * 2)
-      setNotificationMenuStyle({ top: "auto", left, width, bottom, maxHeight })
+      const keyboardGap = Math.max(0, window.innerHeight - (vp.top + vp.height))
+      setNotificationMenuStyle({
+        top: "auto",
+        left: 0,
+        width: "100%",
+        bottom: keyboardGap,
+        maxHeight: Math.round(Math.min(vp.height * 0.7, vp.height - 56)),
+      })
       return
     }
     const width = Math.min(380, vp.width - pad * 2)
@@ -1103,8 +1113,8 @@ export default function GymApp({
         </nav>
         <div className="sidebar-bottom">
           <div className="user-chip">
-            <span>{(currentUser.first_name || currentUser.username).slice(0, 1).toUpperCase()}</span>
-            <div>
+            <span className="user-chip-avatar">{(currentUser.first_name || currentUser.username).slice(0, 1).toUpperCase()}</span>
+            <div className="user-chip-meta">
               <strong>{currentUser.first_name || currentUser.username}</strong>
               <small>{roleLabel}</small>
             </div>
@@ -1119,8 +1129,9 @@ export default function GymApp({
           <button className="mobile-menu-button" aria-label={mobileMenuOpen ? t("nav.close") : t("nav.open")} onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
             {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
-          <div>
-            <span className="eyebrow">{today}</span>
+          <div className="topbar-title">
+            <span className="eyebrow topbar-date-long">{today}</span>
+            <span className="eyebrow topbar-date-short">{todayShort}</span>
             <h1>
               {page === "dashboard" ? t("hello", { name: currentUser.first_name || currentUser.username }) : t(`page.${page}` as Msg)}
             </h1>
@@ -1142,7 +1153,7 @@ export default function GymApp({
                       <strong>{t("notif.title")}</strong>
                       {unreadCount > 0 && <span className="notification-unread-pill">{unreadCount}</span>}
                     </div>
-                    <section className="notification-sheet-section">
+                    <section className="notification-sheet-section notification-sheet-list">
                       <p className="notification-sheet-label">{t("notif.needToSee")}</p>
                       {notifications.slice(0, 8).map(item => (
                         <article className={`notification-dropdown-item ${item.is_read ? "read" : "unread"}`} key={item.id} onClick={() => openNotification(item)}>
@@ -1158,38 +1169,54 @@ export default function GymApp({
                           </button>
                         </article>
                       ))}
-                      {!notifications.length && <div className="empty">{t("notif.empty")}<br />{t("notif.emptyHint")}</div>}
+                      {!notifications.length && <EmptyState title={t("notif.empty")} hint={t("notif.emptyHint")} />}
                     </section>
                     <section className="notification-sheet-section notification-sheet-click">
                       <p className="notification-sheet-label">{t("notif.canClick")}</p>
                       <div className="notification-action-list">
-                        {unreadCount > 0 && (
-                          <button type="button" className="notification-action" onClick={() => void markAllNotificationsRead()}>
-                            <Check size={16} /> {t("notif.markRead")}
-                          </button>
-                        )}
-                        {notifications.length > 0 && (
-                          <button type="button" className="notification-action" onClick={() => void deleteAllNotifications()}>
-                            <Trash2 size={16} /> {t("notif.clear")}
-                          </button>
-                        )}
-                        {notificationCompact && (
+                        {notificationCompact ? (
                           <>
-                            <button type="button" className="notification-action" onClick={() => { setNotificationsOpen(false); go("members") }}>
-                              <UserPlus size={16} /> {t("addMember")}
-                            </button>
-                            <button type="button" className="notification-action" onClick={() => void load()}>
-                              <RefreshCw size={16} /> {t("common.refresh")}
-                            </button>
-                            <div className="notification-action-tools">
+                            <div className="notification-action-bar">
+                              {unreadCount > 0 && (
+                                <button type="button" className="icon-button" aria-label={t("notif.markRead")} onClick={() => void markAllNotificationsRead()}>
+                                  <Check size={16} />
+                                </button>
+                              )}
+                              {notifications.length > 0 && (
+                                <button type="button" className="icon-button" aria-label={t("notif.clear")} onClick={() => void deleteAllNotifications()}>
+                                  <Trash2 size={16} />
+                                </button>
+                              )}
+                              <button type="button" className="icon-button" aria-label={t("addMember")} onClick={() => { setNotificationsOpen(false); go("members") }}>
+                                <UserPlus size={16} />
+                              </button>
+                              <button type="button" className="icon-button" aria-label={t("common.refresh")} onClick={() => void load()}>
+                                <RefreshCw size={16} />
+                              </button>
                               <LanguageSwitch />
                               <ThemeSwitch />
                             </div>
+                            <button type="button" className="notification-action notification-action-wide" onClick={() => { setNotificationsOpen(false); go("notifications") }}>
+                              <Bell size={16} /> {t("notif.viewAll")}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {unreadCount > 0 && (
+                              <button type="button" className="notification-action" onClick={() => void markAllNotificationsRead()}>
+                                <Check size={16} /> {t("notif.markRead")}
+                              </button>
+                            )}
+                            {notifications.length > 0 && (
+                              <button type="button" className="notification-action" onClick={() => void deleteAllNotifications()}>
+                                <Trash2 size={16} /> {t("notif.clear")}
+                              </button>
+                            )}
+                            <button type="button" className="notification-action" onClick={() => { setNotificationsOpen(false); go("notifications") }}>
+                              <Bell size={16} /> {t("notif.viewAll")}
+                            </button>
                           </>
                         )}
-                        <button type="button" className="notification-action" onClick={() => { setNotificationsOpen(false); go("notifications") }}>
-                          <Bell size={16} /> {t("notif.viewAll")}
-                        </button>
                       </div>
                     </section>
                   </div>
@@ -1217,8 +1244,8 @@ export default function GymApp({
         {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
         {error && (
           <div className="error app-banner">
-            {error}
-            <button onClick={() => setError("")} aria-label={t("common.dismiss")}>
+            <p>{error}</p>
+            <button type="button" className="icon-button" onClick={() => setError("")} aria-label={t("common.dismiss")}>
               <X size={15} />
             </button>
           </div>
@@ -1346,20 +1373,42 @@ function Notifications({
   const visibleNotifications = notifications.filter(item => filter === 'all' || (filter === 'unread' && !item.is_read) || item.category === filter)
 
   return (
-    <div className="content">
-      <div className="section-heading notification-center-heading">
-        <div>
-          <span className="eyebrow">{t("notif.center")}</span>
-          <h3>{t("notif.title")}</h3>
-        </div>
-        <div className="notification-heading-actions">
-          <button className="text-button" onClick={onMarkAllRead}>{t("notif.markAll")}</button>
-          <button className="text-button" onClick={onDeleteAll}>{t("notif.deleteAll")}</button>
+    <div className="content notifications-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <div className="page-head-title">
+            <h2>{t("notif.title")}</h2>
+            <div className="page-head-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={onMarkAllRead}
+                aria-label={t("notif.markAll")}
+              >
+                <Check size={16} />
+                <span>{t("notif.markAll")}</span>
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={onDeleteAll}
+                aria-label={t("notif.deleteAll")}
+              >
+                <Trash2 size={16} />
+                <span>{t("notif.deleteAll")}</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <div className="notification-filters">
         {['all', 'unread', 'memberships', 'payments', 'members', 'system'].map(value => (
-          <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>
+          <button
+            type="button"
+            key={value}
+            className={filter === value ? 'active' : ''}
+            onClick={() => setFilter(value)}
+          >
             {value === 'all' || value === 'unread' ? t(`filter.${value}` as Msg) : t(`cat.${value}` as Msg)}
           </button>
         ))}
@@ -1373,12 +1422,12 @@ function Notifications({
               <p>{item.message}</p>
               <small>{date(item.created_at)}</small>
             </div>
-            <button className="icon-button notification-delete" title={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); onDelete(item.id) }}>
+            <button type="button" className="icon-button notification-delete" title={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); onDelete(item.id) }}>
               <Trash2 size={15} />
             </button>
           </article>
         ))}
-        {!visibleNotifications.length && <div className="empty">{t("notif.empty")}<br />{t("notif.emptyHint")}</div>}
+        {!visibleNotifications.length && <EmptyState title={t("notif.empty")} hint={t("notif.emptyHint")} />}
       </section>
     </div>
   )
@@ -1397,20 +1446,34 @@ function Dashboard({
 }) {
   const { t } = useLang();
   return (
-    <div className="content">
+    <div className="content dashboard-page">
       <section className="hero-strip">
-        <div>
+        <div className="hero-copy">
           <span className="eyebrow light">{t("dash.pulse")}</span>
-          <h2>{t("dash.hero")}</h2>
+          <div className="hero-title-row">
+            <h2>{t("dash.hero")}</h2>
+            <div className="hero-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => go("reports")}
+                aria-label={t("dash.reports")}
+              >
+                <BarChart3 size={16} />
+                <span>{t("dash.reports")}</span>
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => go("members")}
+                aria-label={t("addMember")}
+              >
+                <UserPlus size={17} />
+                <span>{t("addMember")}</span>
+              </button>
+            </div>
+          </div>
           <p>{t("dash.heroP")}</p>
-        </div>
-        <div className="hero-actions">
-          <button className="text-button light-link" onClick={() => go("reports")}>
-            {t("dash.reports")}
-          </button>
-          <button className="primary" onClick={() => go("members")}>
-            <UserPlus size={17} /> {t("addMember")}
-          </button>
         </div>
       </section>
       <div className="stats-grid">
@@ -1484,18 +1547,22 @@ function Dashboard({
               {t("common.viewAll")}
             </button>
           </div>
-          {classes.slice(0, 4).map((item) => (
-            <button type="button" className="booking-row" key={item.id} onClick={() => go("classes")}>
-              <span className="booking-number">{item.name}</span>
-              <span className="booking-main">
-                <strong>{t("dash.classMembers", { n: item.member_count })}</strong>
-                <small>{item.class_type}</small>
-              </span>
-              <span className={`status ${item.is_active ? "active" : "expired"}`}>
-                {item.is_active ? t("common.active") : t("common.inactive")}
-              </span>
-            </button>
-          ))}
+          <div className="dash-list">
+            {classes.slice(0, 4).map((item) => (
+              <button type="button" className="dash-row" key={item.id} onClick={() => go("classes")}>
+                <span className="dash-row-main">
+                  <strong>{item.name}</strong>
+                  <small>
+                    {t("dash.classMembers", { n: item.member_count })}
+                    {item.class_type ? ` · ${item.class_type}` : ""}
+                  </small>
+                </span>
+                <span className={`status ${item.is_active ? "active" : "expired"}`}>
+                  {item.is_active ? t("common.active") : t("common.inactive")}
+                </span>
+              </button>
+            ))}
+          </div>
         </section>
       ) : (
         <section className="panel latest">
@@ -1511,27 +1578,28 @@ function Dashboard({
       <section className="panel latest">
         <div className="panel-heading">
           <div>
-            <span className="eyebrow">{t("dash.recent")}</span>
+            <span className="eyebrow">{t("members.eyebrow")}</span>
             <h2>{t("dash.recent")}</h2>
           </div>
           <button className="text-button" onClick={() => go("members")}>
             {t("common.viewAll")}
           </button>
         </div>
-        {(data?.recent_members?.length ? data.recent_members : members.slice(0, 5)).map((member) => (
-          <button type="button" className="booking-row" key={member.id} onClick={() => go("members")}>
-            <span className="booking-number">
-              #{String(member.id).padStart(5, "0")}
-            </span>
-            <span className="booking-main">
-              <strong>{member.name}</strong>
-              <small>
-                {member.phone || t("common.noPhone")} · {member.email || t("common.noEmail")}
-              </small>
-            </span>
-            <span className="status active">{t("dash.member")}</span>
-          </button>
-        ))}
+        <div className="dash-list">
+          {(data?.recent_members?.length ? data.recent_members : members.slice(0, 5)).map((member) => (
+            <button type="button" className="dash-row" key={member.id} onClick={() => go("members")}>
+              <span className="dash-row-id">#{String(member.id).padStart(5, "0")}</span>
+              <span className="dash-row-main">
+                <strong>{member.name}</strong>
+                <small>
+                  {member.phone || t("common.noPhone")}
+                  {member.email ? ` · ${member.email}` : ""}
+                </small>
+              </span>
+              <ChevronRight size={16} className="dash-row-go" aria-hidden="true" />
+            </button>
+          ))}
+        </div>
         {!members.length && !data?.recent_members?.length && <div className="empty">{t("dash.noMembers")}</div>}
       </section>
       </div>
@@ -1571,15 +1639,19 @@ function RemindersPage() {
     void load();
   }, []);
 
-  const openWhatsApp = async (item: WhatsAppReminder) => {
-    if (!item.whatsapp_url || !isSafeWhatsAppUrl(item.whatsapp_url)) return;
+  const openWhatsApp = async (item: WhatsAppReminder, reload = true) => {
+    if (!item.whatsapp_url || !isSafeWhatsAppUrl(item.whatsapp_url)) return false;
     window.open(item.whatsapp_url, "_blank", "noopener,noreferrer");
     try {
       await gymApi.markReminderSent(item.membership_id, item.message);
-      setNotice(t("remind.opened", { name: item.member_name }));
-      await load();
+      if (reload) {
+        setNotice(t("remind.opened", { name: item.member_name }));
+        await load();
+      }
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : t("remind.markFail"));
+      return false;
     }
   };
 
@@ -1598,17 +1670,97 @@ function RemindersPage() {
     return item.reasons.includes(filter);
   });
   const [shown, setShown] = useState(PAGE_SIZE);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [queue, setQueue] = useState<WhatsAppReminder[]>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [sending, setSending] = useState(false);
+  const queueSent = useRef(0);
   useEffect(() => {
     setShown(PAGE_SIZE);
   }, [filter, data?.items.length]);
+  useEffect(() => {
+    setSelected(new Set());
+    setQueue([]);
+    setQueueIndex(0);
+    queueSent.current = 0;
+  }, [filter]);
   const pagedItems = items.slice(0, shown);
+  const canSend = (item: WhatsAppReminder) =>
+    Boolean(item.whatsapp_url && isSafeWhatsAppUrl(item.whatsapp_url));
+  const sendableItems = items.filter(canSend);
+  const selectedItems = sendableItems.filter((item) => selected.has(item.membership_id));
+  const allSendableSelected = sendableItems.length > 0 && sendableItems.every((item) => selected.has(item.membership_id));
+
+  const toggleSelected = (id: number) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelected((current) => {
+      if (allSendableSelected) return new Set();
+      const next = new Set(current);
+      for (const item of sendableItems) next.add(item.membership_id);
+      return next;
+    });
+  };
+
+  const startQueue = (list: WhatsAppReminder[]) => {
+    if (!list.length) {
+      setError(selected.size ? t("remind.noPhoneSelected") : t("remind.noneSelected"));
+      return;
+    }
+    setError("");
+    if (list.length === 1) {
+      void openWhatsApp(list[0]);
+      return;
+    }
+    queueSent.current = 0;
+    setQueue(list);
+    setQueueIndex(0);
+  };
+
+  const finishQueue = async () => {
+    const sent = queueSent.current;
+    setQueue([]);
+    setQueueIndex(0);
+    setSelected(new Set());
+    if (sent > 0) setNotice(t("remind.sentN", { n: sent }));
+    await load();
+  };
+
+  const advanceQueue = async () => {
+    if (queueIndex + 1 >= queue.length) {
+      await finishQueue();
+      return;
+    }
+    setQueueIndex((index) => index + 1);
+  };
+
+  const sendQueueItem = async () => {
+    const item = queue[queueIndex];
+    if (!item) return;
+    setSending(true);
+    const ok = await openWhatsApp(item, false);
+    setSending(false);
+    if (ok) queueSent.current += 1;
+    if (ok) await advanceQueue();
+  };
 
   return (
-    <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("remind.eyebrow")}</span>
-        <h2>{t("remind.title")}</h2>
-        <p>{t("remind.intro")}</p>
+    <div className="content reminders-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("remind.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("remind.title")}</h2>
+          </div>
+          <p>{t("remind.intro")}</p>
+        </div>
       </div>
       {error && <div className="error app-banner">{error}</div>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
@@ -1635,12 +1787,63 @@ function RemindersPage() {
         </button>
       </div>
       <section className="panel table-wrap reports-panel">
-        <div className="reports-panel-head">
+        <div className="reports-panel-head reminder-send-head">
           <div>
             <span className="eyebrow">{t("members.eyebrow")}</span>
             <h3>{t("remind.send")}</h3>
           </div>
         </div>
+        {queue.length > 0 ? (
+          <div className="reminder-send-bar is-queue">
+            <div className="reminder-send-copy">
+              <span className="eyebrow">{t("remind.sending", { current: queueIndex + 1, total: queue.length })}</span>
+              <strong>{queue[queueIndex]?.member_name}</strong>
+              <small>{queue[queueIndex]?.phone}</small>
+            </div>
+            <div className="reminder-send-actions">
+              <button type="button" className="secondary" disabled={sending} onClick={() => void advanceQueue()}>
+                {t("remind.skip")}
+              </button>
+              <button type="button" className="whatsapp-button" disabled={sending} onClick={() => void sendQueueItem()}>
+                <MessageCircle size={14} /> WhatsApp
+              </button>
+              <button type="button" className="text-button" disabled={sending} onClick={() => { setQueue([]); setQueueIndex(0); }}>
+                {t("remind.cancelSend")}
+              </button>
+            </div>
+          </div>
+        ) : items.length > 0 ? (
+          <div className="reminder-send-bar">
+            <label className="reminder-select-all">
+              <input
+                type="checkbox"
+                checked={allSendableSelected}
+                disabled={!sendableItems.length}
+                onChange={toggleAll}
+              />
+              <span>{t("remind.selectAll")}</span>
+            </label>
+            <small>{t("remind.selected", { n: selectedItems.length })}</small>
+            <div className="reminder-send-actions">
+              <button
+                type="button"
+                className="whatsapp-button"
+                disabled={!selectedItems.length}
+                onClick={() => startQueue(selectedItems)}
+              >
+                <MessageCircle size={14} /> {t("remind.sendSelected")}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={!sendableItems.length}
+                onClick={() => startQueue(sendableItems)}
+              >
+                {t("remind.sendAll")}
+              </button>
+            </div>
+          </div>
+        ) : null}
         {loading && <div className="empty">{t("remind.loading")}</div>}
         {!loading && !items.length && (
           <div className="empty">
@@ -1652,6 +1855,15 @@ function RemindersPage() {
           <table>
             <thead>
               <tr>
+                <th className="record-check">
+                  <input
+                    type="checkbox"
+                    checked={allSendableSelected}
+                    disabled={!sendableItems.length}
+                    onChange={toggleAll}
+                    aria-label={t("remind.selectAll")}
+                  />
+                </th>
                 <th>{t("dash.member")}</th>
                 <th>{t("remind.why")}</th>
                 <th>{t("remind.ends")}</th>
@@ -1662,12 +1874,29 @@ function RemindersPage() {
             </thead>
             <tbody>
               {pagedItems.map((item) => (
-                <tr key={item.membership_id}>
-                  <td>
-                    <strong>{item.member_name}</strong>
-                    {item.reminded_today ? <small>{t("remind.today")}</small> : null}
+                <tr className={`record-card record-card-reminder${selected.has(item.membership_id) ? " is-selected" : ""}`} key={item.membership_id}>
+                  <td className="record-check">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(item.membership_id)}
+                      disabled={!canSend(item)}
+                      onChange={() => toggleSelected(item.membership_id)}
+                      aria-label={t("remind.selectMember", { name: item.member_name })}
+                    />
                   </td>
-                  <td>
+                  <td className="record-name" data-label={t("dash.member")}>
+                    <strong>{item.member_name}</strong>
+                    {item.reasons.map((reason) => (
+                      <span className={`status ${reason === "unpaid" || reason === "expired" ? "unpaid" : "partial"}`} key={reason}>
+                        {reasonLabel(reason, t)}
+                      </span>
+                    ))}
+                    <small>
+                      {item.phone || t("common.noPhone")}
+                      {item.reminded_today ? ` · ${t("remind.today")}` : ""}
+                    </small>
+                  </td>
+                  <td className="record-plan" data-label={t("remind.why")}>
                     <div className="reminder-reasons">
                       {item.reasons.map((reason) => (
                         <span className={`status ${reason === "unpaid" || reason === "expired" ? "unpaid" : "partial"}`} key={reason}>
@@ -1676,7 +1905,7 @@ function RemindersPage() {
                       ))}
                     </div>
                   </td>
-                  <td>
+                  <td className="record-period" data-label={t("remind.ends")}>
                     {date(item.end_date)}
                     <small>
                       {item.days_left >= 0
@@ -1684,25 +1913,27 @@ function RemindersPage() {
                         : t(Math.abs(item.days_left) === 1 ? "remind.daysAgo" : "remind.daysAgoPlural", { n: Math.abs(item.days_left) })}
                     </small>
                   </td>
-                  <td className="table-money">
+                  <td className="record-owing table-money" data-label={t("remind.stillOwes")}>
                     {Number(item.remaining) > 0 ? (
                       <strong className="amount-owing">{money(item.remaining)}</strong>
                     ) : (
                       <span className="amount-settled">{money(0)}</span>
                     )}
                   </td>
-                  <td>{item.phone || t("common.noPhone")}</td>
-                  <td className="table-actions">
-                    {item.whatsapp_url ? (
-                      <button type="button" className="whatsapp-button" onClick={() => void openWhatsApp(item)}>
-                        <MessageCircle size={14} /> WhatsApp
+                  <td className="record-pay" data-label={t("common.phone")}>{item.phone || t("common.noPhone")}</td>
+                  <td className="record-actions" data-label={t("common.actions")}>
+                    <div className="table-actions">
+                      {item.whatsapp_url ? (
+                        <button type="button" className="whatsapp-button" onClick={() => void openWhatsApp(item)}>
+                          <MessageCircle size={14} /> WhatsApp
+                        </button>
+                      ) : (
+                        <span className="status">{t("remind.addPhone")}</span>
+                      )}
+                      <button type="button" className="text-button" onClick={() => void copyMessage(item)}>
+                        {t("common.copy")}
                       </button>
-                    ) : (
-                      <span className="status">{t("remind.addPhone")}</span>
-                    )}
-                    <button className="text-button" onClick={() => void copyMessage(item)}>
-                      {t("common.copy")}
-                    </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -2110,38 +2341,53 @@ function Administration() {
   };
 
   return (
-    <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("admin.eyebrow")}</span>
-        <h2>{t("admin.title")}</h2>
-        <p>{t("admin.intro")}</p>
+    <div className="content admin-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("admin.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("admin.title")}</h2>
+            <div className="page-head-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={openCreate}
+                aria-label={t("admin.add")}
+              >
+                <Plus size={16} />
+                <span>{t("admin.add")}</span>
+              </button>
+            </div>
+          </div>
+          <p>{t("admin.intro")}</p>
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       <div className="stats-grid">
         <Stat
           icon={Users}
-          label="Total users"
+          label={t("admin.total")}
           value={users.length}
-          detail="System accounts"
+          detail={t("admin.accounts")}
         />
         <Stat
           icon={Users}
-          label="Active users"
+          label={t("admin.active")}
           value={active}
-          detail="Can access platform"
+          detail={t("admin.canAccess")}
           className="sage"
         />
         <Stat
           icon={Activity}
-          label="Admins"
+          label={t("admin.admins")}
           value={admins}
-          detail="Staff accounts"
+          detail={t("admin.staff")}
           className="gold"
         />
         <Stat
           icon={Activity}
-          label="Active sessions"
+          label={t("admin.sessions")}
           value="—"
           detail="Backend gap"
           className="ink"
@@ -2153,12 +2399,9 @@ function Administration() {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search users by name, email or username..."
+            placeholder={t("admin.search")}
           />
         </div>
-        <button className="primary" onClick={openCreate}>
-          <Plus size={16} /> Add user
-        </button>
       </div>
       {selectedUser && (
         <div className="member-details-overlay">
@@ -2187,112 +2430,110 @@ function Administration() {
       {open && (
         <div className="member-details-overlay">
         <section className="panel form-panel member-details-panel">
-          <span className="eyebrow">{editing ? "EDIT USER" : "NEW USER"}</span>
-          <div className="date-fields">
-            <label>
-              First name
-              <input
-                required
-                value={form.first_name}
-                onChange={(event) =>
-                  setForm({ ...form, first_name: event.target.value })
-                }
-              />
-            </label>
-            <label>
-              Last name
-              <input
-                required
-                value={form.last_name}
-                onChange={(event) =>
-                  setForm({ ...form, last_name: event.target.value })
-                }
-              />
-            </label>
-          </div>
-          <label>
-            Email
-            <input
-              type="email"
-              value={form.email}
-              onChange={(event) =>
-                setForm({ ...form, email: event.target.value })
-              }
-            />
-          </label>
-          {!editing && (
-            <>
-              <label>
-                Username
+          <span className="eyebrow">{editing ? t("admin.edit") : t("admin.new")}</span>
+          <FormSection title={t("form.personal")}>
+            <FieldGrid>
+              <Field label={t("admin.first")}>
                 <input
                   required
-                  value={form.username}
+                  value={form.first_name}
                   onChange={(event) =>
-                    setForm({ ...form, username: event.target.value })
+                    setForm({ ...form, first_name: event.target.value })
                   }
                 />
-              </label>
-              <label>
-                Password
+              </Field>
+              <Field label={t("admin.last")}>
                 <input
-                  type="password"
                   required
-                  minLength={8}
-                  value={form.password}
+                  value={form.last_name}
                   onChange={(event) =>
-                    setForm({ ...form, password: event.target.value })
+                    setForm({ ...form, last_name: event.target.value })
                   }
                 />
-              </label>
-            </>
-          )}
-          {editing && (
-            <div className="date-fields">
-              <label>
-                New password
+              </Field>
+              <Field label={t("common.email")} wide>
                 <input
-                  type="password"
-                  minLength={8}
-                  placeholder="Leave blank to keep current password"
-                  value={form.password}
+                  type="email"
+                  value={form.email}
                   onChange={(event) =>
-                    setForm({ ...form, password: event.target.value })
+                    setForm({ ...form, email: event.target.value })
                   }
                 />
-              </label>
-              <label>
-                Confirm new password
-                <input
-                  type="password"
-                  minLength={8}
-                  value={form.confirm_password}
+              </Field>
+            </FieldGrid>
+          </FormSection>
+          <FormSection title={t("form.account")}>
+            <FieldGrid>
+              {!editing && (
+                <>
+                  <Field label={t("admin.username")}>
+                    <input
+                      required
+                      value={form.username}
+                      onChange={(event) =>
+                        setForm({ ...form, username: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label={t("admin.password")}>
+                    <input
+                      type="password"
+                      required
+                      minLength={8}
+                      value={form.password}
+                      onChange={(event) =>
+                        setForm({ ...form, password: event.target.value })
+                      }
+                    />
+                  </Field>
+                </>
+              )}
+              {editing && (
+                <>
+                  <Field label={t("admin.newPassword")} hint={t("admin.keep")}>
+                    <input
+                      type="password"
+                      minLength={8}
+                      placeholder={t("admin.keep")}
+                      value={form.password}
+                      onChange={(event) =>
+                        setForm({ ...form, password: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label={t("admin.confirm")}>
+                    <input
+                      type="password"
+                      minLength={8}
+                      value={form.confirm_password}
+                      onChange={(event) =>
+                        setForm({ ...form, confirm_password: event.target.value })
+                      }
+                    />
+                  </Field>
+                </>
+              )}
+              <Field label={t("admin.role")} wide>
+                <select
+                  value={form.role}
                   onChange={(event) =>
-                    setForm({ ...form, confirm_password: event.target.value })
+                    setForm({ ...form, role: event.target.value })
                   }
-                />
-              </label>
-            </div>
-          )}
-          <label>
-            Role
-            <select
-              value={form.role}
-              onChange={(event) =>
-                setForm({ ...form, role: event.target.value })
-              }
-            >
-              <option>Admin</option>
-              <option>Reception</option>
-              <option>Trainer</option>
-              <option>Super Admin</option>
-            </select>
-          </label>
+                >
+                  <option>Admin</option>
+                  <option>Reception</option>
+                  <option>Trainer</option>
+                  <option>Super Admin</option>
+                </select>
+              </Field>
+            </FieldGrid>
+          </FormSection>
           <div className="form-actions">
             <button type="button" className="secondary" onClick={() => setOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </button>
             <button type="button" className="primary" onClick={() => void save()}>
-              {editing ? "Save changes" : "Create user"}
+              {editing ? t("common.save") : t("admin.create")}
             </button>
           </div>
         </section>
@@ -2312,56 +2553,67 @@ function Administration() {
           </thead>
           <tbody>
             {users.map((user) => (
-              <tr key={user.id} onClick={(event) => { if (!(event.target as HTMLElement).closest("button")) setSelectedUser(user) }}>
-                <td>
+              <tr
+                className="record-card record-card-user"
+                key={user.id}
+                onClick={(event) => {
+                  if (!(event.target as HTMLElement).closest("button")) setSelectedUser(user);
+                }}
+              >
+                <td className="record-name" data-label={t("admin.user")}>
                   <strong>
                     {user.first_name} {user.last_name}
                   </strong>
+                  <Badge value={user.is_active ? "active" : "inactive"} />
                   <small>{user.username}</small>
                 </td>
-                <td>{user.email || "—"}</td>
-                <td>{user.role}</td>
-                <td>
+                <td className="record-plan" data-label="Email">{user.email || "—"}</td>
+                <td className="record-owing" data-label={t("admin.role")}>{user.role}</td>
+                <td className="record-pay" data-label={t("common.status")}>
                   <Badge value={user.is_active ? "active" : "inactive"} />
                 </td>
-                <td>{user.last_login ? date(user.last_login) : "Never"}</td>
-                <td className="table-actions">
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      startEdit(user);
-                    }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void toggle(user);
-                    }}
-                  >
-                    {user.is_active ? "Deactivate" : "Activate"}
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void remove(user);
-                    }}
-                  >
-                    Delete
-                  </button>
+                <td className="record-period" data-label={t("admin.lastLogin")}>
+                  {user.last_login ? date(user.last_login) : "Never"}
+                </td>
+                <td className="record-actions" data-label={t("common.actions")}>
+                  <div className="table-actions">
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startEdit(user);
+                      }}
+                    >
+                      {t("common.edit")}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void toggle(user);
+                      }}
+                    >
+                      {user.is_active ? t("admin.deactivate") : t("admin.activate")}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void remove(user);
+                      }}
+                    >
+                      {t("common.delete")}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {!users.length && <div className="empty">No users found.</div>}
+        {!users.length && <EmptyState title={t("admin.empty")} />}
       </section>
     </div>
   );
@@ -3300,12 +3552,54 @@ function Members({
   };
 
   return (
-    <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("members.eyebrow")}</span>
-        <h2>{t("members.title")}</h2>
-        <p>{t("members.intro")}</p>
+    <div className="content members-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("members.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("members.title")}</h2>
+            <div className="page-head-actions">
+              <button
+                type="button"
+                className="secondary"
+                disabled={importing}
+                aria-label="Export"
+                onClick={() => void exportBackup()}
+              >
+                <Download size={15} />
+                <span>Export</span>
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={importing}
+                aria-label="Import"
+                onClick={() => backupInputRef.current?.click()}
+              >
+                <Upload size={15} />
+                <span>{importing ? t("backup.busy") : "Import"}</span>
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setOpen(true)}
+                aria-label={t("members.add")}
+              >
+                <Plus size={16} />
+                <span>{t("members.add")}</span>
+              </button>
+            </div>
+          </div>
+          <p>{t("members.intro")}</p>
+        </div>
       </div>
+      <input
+        ref={backupInputRef}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        onChange={importBackup}
+      />
       <div className="ledger-stats">
         <button
           type="button"
@@ -3377,178 +3671,149 @@ function Members({
           <option value="expired">Expired</option>
           <option value="none">No membership</option>
         </select>
-        <div className="toolbar-actions">
-          <button type="button" className="secondary" disabled={importing} onClick={() => void exportBackup()}>
-            <Download size={15} /> Export
-          </button>
-          <button type="button" className="secondary" disabled={importing} onClick={() => backupInputRef.current?.click()}>
-            <Upload size={15} /> {importing ? t("backup.busy") : "Import"}
-          </button>
-          <input
-            ref={backupInputRef}
-            type="file"
-            accept=".json,application/json"
-            hidden
-            onChange={importBackup}
-          />
-          <button className="primary" onClick={() => setOpen(true)}>
-            <Plus size={16} /> {t("members.add")}
-          </button>
-        </div>
       </div>
       {open && (
         <section className="panel form-panel member-form">
-          <span className="eyebrow">NEW MEMBER</span>
-          <div className="date-fields">
-            <label>
-              First name
-              <input
-                value={form.first_name}
-                onChange={(event) =>
-                  setForm({ ...form, first_name: event.target.value })
-                }
-              />
-            </label>
-            <label>
-              Last name
-              <input
-                value={form.last_name}
-                onChange={(event) =>
-                  setForm({ ...form, last_name: event.target.value })
-                }
-              />
-            </label>
-          </div>
-          <div className="date-fields">
-            <label>
-              {t("members.cin")}
-              <input
-                value={form.id_number}
-                placeholder={t("members.cinPh")}
-                onChange={(event) =>
-                  setForm({ ...form, id_number: event.target.value })
-                }
-              />
-              <small className="field-hint">{t("members.cinHelp")}</small>
-            </label>
-            <label>
-              {t("members.city")}
-              <input
-                value={form.city}
-                placeholder={t("members.cityPh")}
-                onChange={(event) =>
-                  setForm({ ...form, city: event.target.value })
-                }
-              />
-            </label>
-          </div>
-          <label>
-            {t("members.address")}
-            <input
-              value={form.address}
-              placeholder={t("members.addressPh")}
-              onChange={(event) =>
-                setForm({ ...form, address: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Phone
-            <input
-              value={form.phone}
-              onChange={(event) =>
-                setForm({ ...form, phone: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Email
-            <input
-              type="email"
-              value={form.email}
-              onChange={(event) =>
-                setForm({ ...form, email: event.target.value })
-              }
-            />
-          </label>
-          <div className="date-fields">
-            <label>
-              Class
-              <select
-                value={form.class_id}
-                onChange={(event) =>
-                  setForm({ ...form, class_id: event.target.value })
-                }
-              >
-                <option value="">Select class</option>
-                {classes.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Plan
-              <select
-                value={form.plan_id}
-                onChange={(event) =>
-                  setForm({ ...form, plan_id: event.target.value })
-                }
-              >
-                <option value="">Select plan</option>
-                {selectablePlans(plans).map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="date-fields">
-            <label>
-              Start date
-              <input
-                type="date"
-                value={form.start_date}
-                onChange={(event) =>
-                  setForm({ ...form, start_date: event.target.value })
-                }
-              />
-            </label>
-          </div>
-          <p className="form-caption">Payment: what they gave you now, and what they still owe.</p>
-          <div className="date-fields">
-            <label>
-              Amount paid (DH)
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="100"
-                value={form.amount_paid}
-                onChange={(event) =>
-                  setForm({ ...form, amount_paid: event.target.value })
-                }
-              />
-            </label>
-            <label>
-              Still owes (DH)
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="20"
-                value={form.remaining}
-                onChange={(event) =>
-                  setForm({ ...form, remaining: event.target.value })
-                }
-              />
-            </label>
-          </div>
+          <span className="eyebrow">{t("members.new")}</span>
+          <FormSection title={t("form.personal")}>
+            <FieldGrid>
+              <Field label={t("common.firstName")}>
+                <input
+                  value={form.first_name}
+                  onChange={(event) =>
+                    setForm({ ...form, first_name: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("common.lastName")}>
+                <input
+                  value={form.last_name}
+                  onChange={(event) =>
+                    setForm({ ...form, last_name: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("members.cin")} hint={t("members.cinHelp")}>
+                <input
+                  value={form.id_number}
+                  placeholder={t("members.cinPh")}
+                  onChange={(event) =>
+                    setForm({ ...form, id_number: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("members.city")}>
+                <input
+                  value={form.city}
+                  placeholder={t("members.cityPh")}
+                  onChange={(event) =>
+                    setForm({ ...form, city: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("members.address")} wide>
+                <input
+                  value={form.address}
+                  placeholder={t("members.addressPh")}
+                  onChange={(event) =>
+                    setForm({ ...form, address: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("common.phone")}>
+                <input
+                  value={form.phone}
+                  onChange={(event) =>
+                    setForm({ ...form, phone: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("common.email")}>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={(event) =>
+                    setForm({ ...form, email: event.target.value })
+                  }
+                />
+              </Field>
+            </FieldGrid>
+          </FormSection>
+          <FormSection title={t("form.membership")}>
+            <FieldGrid>
+              <Field label={t("members.class")}>
+                <select
+                  value={form.class_id}
+                  onChange={(event) =>
+                    setForm({ ...form, class_id: event.target.value })
+                  }
+                >
+                  <option value="">{t("members.selectClass")}</option>
+                  {classes.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={t("memberships.plan")}>
+                <select
+                  value={form.plan_id}
+                  onChange={(event) =>
+                    setForm({ ...form, plan_id: event.target.value })
+                  }
+                >
+                  <option value="">{t("members.selectPlan")}</option>
+                  {selectablePlans(plans).map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={t("members.startDate")}>
+                <input
+                  type="date"
+                  value={form.start_date}
+                  onChange={(event) =>
+                    setForm({ ...form, start_date: event.target.value })
+                  }
+                />
+              </Field>
+            </FieldGrid>
+          </FormSection>
+          <FormSection title={t("form.payment")}>
+            <p className="form-caption">{t("members.paymentHelp")}</p>
+            <FieldGrid>
+              <Field label={t("members.amountPaid")}>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="100"
+                  value={form.amount_paid}
+                  onChange={(event) =>
+                    setForm({ ...form, amount_paid: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("pay.owes")}>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="20"
+                  value={form.remaining}
+                  onChange={(event) =>
+                    setForm({ ...form, remaining: event.target.value })
+                  }
+                />
+              </Field>
+            </FieldGrid>
+          </FormSection>
           <div className="form-actions">
             <button type="button" className="secondary" onClick={() => setOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </button>
             <button
               type="button"
@@ -3556,7 +3821,7 @@ function Members({
               onClick={submit}
               disabled={!form.first_name.trim() || !form.last_name.trim() || !form.id_number.trim() || !form.address.trim()}
             >
-              Create member
+              {t("members.create")}
             </button>
           </div>
         </section>
@@ -3579,41 +3844,36 @@ function Members({
               const membership = membershipFor(member.id);
               const memberStatus = memberStatuses[member.id];
               const remaining = Number(membership?.remaining_balance || 0);
-              const dotClass =
-                memberStatus === "active"
-                  ? "active"
-                  : memberStatus === "expiring_soon"
-                    ? "expiring"
-                    : "inactive";
               return (
-                <tr key={member.id} onClick={() => showMemberDetails(member)}>
-                  <td data-label={t("dash.member")}>
-                    <span
-                      className={`member-status-dot ${dotClass}`}
-                      title={memberStatus || "No membership"}
-                    ></span>
-                    {member.name}
+                <tr className="record-card record-card-member" key={member.id} onClick={() => showMemberDetails(member)}>
+                  <td className="record-name" data-label={t("dash.member")}>
+                    <strong>{member.name}</strong>
+                    {membership ? (
+                      <Badge value={memberStatus || membership.status} />
+                    ) : (
+                      <span className="status expired">No plan</span>
+                    )}
                     <small>
                       {member.id_number ? `CIN ${member.id_number}` : t("members.noCin")}
                       {member.phone ? ` · ${member.phone}` : ""}
                     </small>
                   </td>
-                  <td data-label={t("members.class")}>{member.class_name || "No class"}</td>
-                  <td data-label={t("members.price")}>{membership ? money(membership.price) : "—"}</td>
-                  <td data-label={t("members.paidCol")}>{membership ? money(membership.total_paid) : "—"}</td>
-                  <td className="table-money" data-label={t("members.stillOwes")}>
+                  <td className="record-plan" data-label={t("members.class")}>{member.class_name || "No class"}</td>
+                  <td className="record-price" data-label={t("members.price")}>{membership ? money(membership.price) : "—"}</td>
+                  <td className="record-paid" data-label={t("members.paidCol")}>{membership ? money(membership.total_paid) : "—"}</td>
+                  <td className="record-owing table-money" data-label={t("members.stillOwes")}>
                     <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
                       {membership ? (remaining > 0 ? money(remaining) : "Settled") : "—"}
                     </strong>
                   </td>
-                  <td data-label={t("members.payment")}>
+                  <td className="record-pay" data-label={t("members.payment")}>
                     {membership ? (
                       <Badge value={membership.payment_status} payment />
                     ) : (
                       <span className="status expired">No plan</span>
                     )}
                   </td>
-                  <td data-label={t("common.actions")}>
+                  <td className="record-actions" data-label={t("common.actions")}>
                     <div className="table-actions">
                       {membership ? (
                         <button
@@ -3656,9 +3916,7 @@ function Members({
         </table>
         <LoadMoreBar shown={shown} total={visiblePeople.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visiblePeople.length && (
-          <div className="empty">
-            {people.length ? "No members match these filters." : "No members found."}
-          </div>
+          <EmptyState title={people.length ? t("members.emptyFilter") : t("members.empty")} />
         )}
       </section>
     </div>
@@ -3752,18 +4010,28 @@ function ClassesPage({
 
   return (
     <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("class.eyebrow")}</span>
-        <h2>{t("class.title")}</h2>
-        <p>{canAdminister ? t("class.intro") : t("class.staff")}</p>
-      </div>
-      {canAdminister && (
-        <div className="toolbar">
-          <button className="primary" onClick={openCreate}>
-            <Plus size={16} /> {t("class.add")}
-          </button>
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("class.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("class.title")}</h2>
+            {canAdminister && (
+              <div className="page-head-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={openCreate}
+                  aria-label={t("class.add")}
+                >
+                  <Plus size={16} />
+                  <span>{t("class.add")}</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <p>{canAdminister ? t("class.intro") : t("class.staff")}</p>
         </div>
-      )}
+      </div>
       {open && canAdminister && (
         <section className="panel form-panel">
           <span className="eyebrow">{editing ? t("class.editHead") : t("class.create")}</span>
@@ -3877,24 +4145,27 @@ function ClassesPage({
             </thead>
             <tbody>
               {classes.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.name}</td>
-                  <td>{item.member_count}</td>
-                  <td>{item.class_type.replace("_", " ")}</td>
-                  <td>
+                <tr className="record-card record-card-class" key={item.id}>
+                  <td className="record-name" data-label={t("class.name")}>
+                    <strong>{item.name}</strong>
                     <Badge value={item.is_active ? "active" : "inactive"} />
                   </td>
-                  <td>
+                  <td className="record-owing" data-label={t("class.members")}>{item.member_count}</td>
+                  <td className="record-plan" data-label={t("class.type")}>{item.class_type.replace("_", " ")}</td>
+                  <td className="record-pay" data-label={t("common.status")}>
+                    <Badge value={item.is_active ? "active" : "inactive"} />
+                  </td>
+                  <td className="record-actions" data-label={t("common.actions")}>
                     <div className="table-actions">
-                      <button className="text-button" onClick={() => setSelectedId(item.id)}>
+                      <button type="button" className="text-button" onClick={() => setSelectedId(item.id)}>
                         {t("class.view")}
                       </button>
                       {canAdminister && (
                         <>
-                          <button className="text-button" onClick={() => openEdit(item)}>
+                          <button type="button" className="text-button" onClick={() => openEdit(item)}>
                             {t("common.edit")}
                           </button>
-                          <button className="text-button" onClick={() => removeClass(item)}>
+                          <button type="button" className="text-button" onClick={() => removeClass(item)}>
                             {t("common.delete")}
                           </button>
                         </>
@@ -4249,29 +4520,30 @@ function Memberships({
             {pagedItems.map((item) => {
               const remaining = Number(item.remaining_balance || 0);
               return (
-              <tr key={item.id} onClick={() => showMembershipDetails(item)}>
-                <td data-label={t("dash.member")}>
-                  {memberName(item.member_id)}
-                  <small>{item.status.replace("_", " ")}</small>
+              <tr className="record-card" key={item.id} onClick={() => showMembershipDetails(item)}>
+                <td className="record-name" data-label={t("dash.member")}>
+                  <strong>{memberName(item.member_id)}</strong>
+                  <Badge value={item.status} />
                 </td>
-                <td data-label={t("memberships.plan")}>{planName(item.plan_id)}</td>
-                <td data-label={t("memberships.period")}>
+                <td className="record-plan" data-label={t("memberships.plan")}>{planName(item.plan_id)}</td>
+                <td className="record-period" data-label={t("memberships.period")}>
                   {date(item.start_date)}
                   <small>to {date(item.end_date)}</small>
                 </td>
-                <td data-label={t("members.price")}>{money(item.price)}</td>
-                <td data-label={t("members.paidCol")}>{money(item.total_paid)}</td>
-                <td className="table-money" data-label={t("members.stillOwes")}>
+                <td className="record-price" data-label={t("members.price")}>{money(item.price)}</td>
+                <td className="record-paid" data-label={t("members.paidCol")}>{money(item.total_paid)}</td>
+                <td className="record-owing table-money" data-label={t("members.stillOwes")}>
                   <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
                     {remaining > 0 ? money(remaining) : "Settled"}
                   </strong>
                 </td>
-                <td data-label={t("members.payment")}>
+                <td className="record-pay" data-label={t("members.payment")}>
                   <Badge value={item.payment_status} payment />
                 </td>
-                <td data-label={t("common.actions")}>
+                <td className="record-actions" data-label={t("common.actions")}>
                   <div className="table-actions">
                     <button
+                      type="button"
                       className="text-button"
                       onClick={(event) => {
                         event.stopPropagation();
@@ -4281,6 +4553,7 @@ function Memberships({
                       Payment
                     </button>
                     <button
+                      type="button"
                       className={`payment-status-action ${item.payment_status === "paid" ? "paid" : "unpaid"}`}
                       title="Mark membership paid"
                       aria-label="Mark membership paid"
@@ -4292,6 +4565,7 @@ function Memberships({
                       <Check size={12} strokeWidth={2.25} />
                     </button>
                     <button
+                      type="button"
                       className={`payment-status-action ${item.payment_status === "unpaid" ? "unpaid" : "paid"}`}
                       title="Mark membership unpaid"
                       aria-label="Mark membership unpaid"
@@ -4423,19 +4697,29 @@ function Plans({
   };
 
   return (
-    <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("plans.eyebrow")}</span>
-        <h2>{t("plans.title")}</h2>
-        <p>{canAdminister ? t("plans.intro") : t("plans.staff")}</p>
-      </div>
-      {canAdminister && (
-        <div className="toolbar">
-          <button className="primary" onClick={openCreate}>
-            <Plus size={16} /> {t("plans.add")}
-          </button>
+    <div className="content plans-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("plans.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("plans.title")}</h2>
+            {canAdminister && (
+              <div className="page-head-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={openCreate}
+                  aria-label={t("plans.add")}
+                >
+                  <Plus size={16} />
+                  <span>{t("plans.add")}</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <p>{canAdminister ? t("plans.intro") : t("plans.staff")}</p>
         </div>
-      )}
+      </div>
       {open && canAdminister && (
         <section className="panel form-panel">
           <span className="eyebrow">{editing ? t("plans.editHead") : t("plans.create")}</span>
@@ -4565,30 +4849,71 @@ function Plans({
             </thead>
             <tbody>
               {plans.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.name}</td>
-                  <td>{planDurationLabel(item.duration_months, t)}</td>
-                  <td>{money(item.price)}</td>
-                  <td>{item.member_count || 0}</td>
-                  <td>
+                <tr
+                  className="record-card record-card-plan"
+                  key={item.id}
+                  onClick={() => setSelectedId(item.id)}
+                >
+                  <td className="record-name" data-label={t("plans.name")}>
+                    <strong>{item.name}</strong>
                     <Badge value={item.is_active ? "active" : "inactive"} />
                   </td>
-                  <td>
+                  <td className="record-plan" data-label={t("plans.duration")}>
+                    {planDurationLabel(item.duration_months, t)}
+                  </td>
+                  <td className="record-owing" data-label={t("plans.price")}>
+                    <strong>{money(item.price)}</strong>
+                  </td>
+                  <td className="record-period" data-label={t("plans.members")}>
+                    {item.member_count || 0}
+                  </td>
+                  <td className="record-pay" data-label={t("common.status")}>
+                    <Badge value={item.is_active ? "active" : "inactive"} />
+                  </td>
+                  <td className="record-actions" data-label={t("common.actions")}>
                     <div className="table-actions">
-                      <button className="text-button" onClick={() => setSelectedId(item.id)}>
+                      <button
+                        type="button"
+                        className="text-button plan-view-action"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedId(item.id);
+                        }}
+                      >
                         {t("plans.view")}
                       </button>
                       {canAdminister && (
                         <>
-                          <button className="text-button" onClick={() => openEdit(item)}>
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openEdit(item);
+                            }}
+                          >
                             {t("common.edit")}
                           </button>
                           {item.is_active && (
-                            <button className="text-button" onClick={() => deactivatePlan(item)}>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                deactivatePlan(item);
+                              }}
+                            >
                               {t("plans.deactivate")}
                             </button>
                           )}
-                          <button className="text-button" onClick={() => removePlan(item)}>
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              removePlan(item);
+                            }}
+                          >
                             {t("common.delete")}
                           </button>
                         </>
@@ -4789,11 +5114,15 @@ function GymPayments({
   }
 
   return (
-    <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("cash.eyebrow")}</span>
-        <h2>{t("cash.title")}</h2>
-        <p>{t("cash.intro")}</p>
+    <div className="content cash-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("cash.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("cash.title")}</h2>
+          </div>
+          <p>{t("cash.intro")}</p>
+        </div>
       </div>
       <form className="desk-search" onSubmit={submitSearch}>
         <div className="search desk-search-field">
@@ -4808,8 +5137,9 @@ function GymPayments({
             spellCheck={false}
           />
         </div>
-        <button className="primary" type="submit" disabled={!query.trim()}>
-          <Search size={16} /> {t("cash.find")}
+        <button className="primary" type="submit" disabled={!query.trim()} aria-label={t("cash.find")}>
+          <Search size={16} />
+          <span>{t("cash.find")}</span>
         </button>
       </form>
       {lookupError && <div className="error app-banner">{lookupError}</div>}
@@ -4914,18 +5244,18 @@ function GymPayments({
               const member = memberById.get(membership.member_id);
               const name = member?.name || `Member #${membership.member_id}`;
               return (
-                <tr key={membership.id}>
-                  <td>
-                    {name}
+                <tr className="record-card record-card-owing" key={membership.id}>
+                  <td className="record-name" data-label={t("dash.member")}>
+                    <strong>{name}</strong>
                     <small>
                       {member?.id_number ? `CIN ${member.id_number}` : ""}
                       {member?.phone ? `${member.id_number ? " · " : ""}${member.phone}` : ""}
                     </small>
                   </td>
-                  <td className="table-money">
+                  <td className="record-owing table-money" data-label={t("members.stillOwes")}>
                     <strong className="amount-owing">{money(membership.remaining_balance)}</strong>
                   </td>
-                  <td>
+                  <td className="record-actions" data-label={t("common.actions")}>
                     <button
                       type="button"
                       className="text-button"
@@ -4963,6 +5293,7 @@ function GymPayments({
                 {t("cash.todayFilter")}
               </button>
               <select
+                size={1}
                 className={period === "month" ? "cash-month-select active" : "cash-month-select"}
                 value={selectedMonth}
                 aria-label={t("common.month")}
@@ -4985,23 +5316,27 @@ function GymPayments({
                 {t("cash.allFilter")}
               </button>
             </div>
+          </div>
+          <div className="cash-log-export">
             <button
               type="button"
               className="secondary"
               disabled={Boolean(exporting)}
+              aria-label={exporting === "xlsx" ? t("rep.exporting") : t("cash.excel")}
               onClick={() => void downloadLog("xlsx")}
             >
               <FileSpreadsheet size={15} />
-              {exporting === "xlsx" ? t("rep.exporting") : t("cash.excel")}
+              <span>{exporting === "xlsx" ? t("rep.exporting") : t("cash.excel")}</span>
             </button>
             <button
               type="button"
               className="secondary"
               disabled={Boolean(exporting)}
+              aria-label={exporting === "pdf" ? t("rep.exporting") : t("cash.pdf")}
               onClick={() => void downloadLog("pdf")}
             >
               <FileText size={15} />
-              {exporting === "pdf" ? t("rep.exporting") : t("cash.pdf")}
+              <span>{exporting === "pdf" ? t("rep.exporting") : t("cash.pdf")}</span>
             </button>
           </div>
         </div>
@@ -5021,24 +5356,24 @@ function GymPayments({
             {pagedPayments.map((payment) => {
               const receipt = payment.receipt_number || `FO-${String(payment.id).padStart(6, "0")}`;
               return (
-                <tr key={payment.id}>
-                  <td>
-                    {labelFor(payment)}
+                <tr className="record-card record-card-payment" key={payment.id}>
+                  <td className="record-name" data-label={t("dash.member")}>
+                    <strong>{labelFor(payment)}</strong>
                     <small>{t("cash.receiptN", { n: receipt })}</small>
                   </td>
-                  <td>
+                  <td className="record-period" data-label={t("cash.date")}>
                     {date(payment.received_at)}
                     <small>{clock(payment.received_at)}</small>
                   </td>
-                  <td>
+                  <td className="record-owing" data-label={t("common.amount")}>
                     <strong>{money(payment.amount)}</strong>
                   </td>
-                  <td>
+                  <td className="record-pay" data-label={t("cash.method")}>
                     <Badge value="paid" payment /> {t("cash.cash")}
                   </td>
-                  <td>{payment.received_by}</td>
-                  <td>{payment.notes || "—"}</td>
-                  <td>
+                  <td className="record-plan" data-label={t("cash.receivedBy")}>{payment.received_by}</td>
+                  <td className={`record-paid${payment.notes ? "" : " is-empty"}`} data-label={t("common.notes")}>{payment.notes || "—"}</td>
+                  <td className="record-actions" data-label={t("common.actions")}>
                     <div className="table-actions">
                       <button type="button" className="text-button" onClick={() => void printReceipt(payment.id)}>
                         {t("cash.print")}
@@ -5639,44 +5974,50 @@ function Trainers({
   };
 
   return (
-    <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("train.eyebrow")}</span>
-        <h2>{t("train.title")}</h2>
-        <p>{t("train.intro")}</p>
+    <div className="content trainers-page">
+      <div className="page-head">
+        <div className="page-intro">
+          <span className="eyebrow">{t("train.eyebrow")}</span>
+          <div className="page-head-title">
+            <h2>{t("train.title")}</h2>
+            {canAdminister && (
+              <div className="page-head-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => setOpen(true)}
+                  aria-label={t("train.add")}
+                >
+                  <Plus size={16} />
+                  <span>{t("train.add")}</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <p>{t("train.intro")}</p>
+        </div>
       </div>
       <div className="ledger-stats">
         <div className="ledger-stat">
-          <span>Trainers</span>
+          <span>{t("train.count")}</span>
           <strong>{rows.length}</strong>
-          <small>Active team</small>
+          <small>{t("train.team")}</small>
         </div>
         <div className="ledger-stat">
-          <span>Pay due</span>
+          <span>{t("train.due")}</span>
           <strong>{money(totals.due)}</strong>
-          <small>This month</small>
+          <small>{t("train.thisMonth")}</small>
         </div>
         <div className="ledger-stat">
-          <span>Paid</span>
+          <span>{t("train.paid")}</span>
           <strong>{money(totals.paid)}</strong>
-          <small>Already given</small>
+          <small>{t("train.given")}</small>
         </div>
         <div className="ledger-stat owing">
-          <span>Still to pay</span>
+          <span>{t("train.still")}</span>
           <strong>{money(totals.unpaid)}</strong>
-          <small>Unpaid this month</small>
+          <small>{t("train.unpaidMonth")}</small>
         </div>
-      </div>
-      <div className="toolbar">
-        {canAdminister ? (
-          <button className="primary" onClick={() => setOpen(true)}>
-            <Plus size={16} /> Add trainer
-          </button>
-        ) : (
-          <p className="form-caption" style={{ margin: 0 }}>
-            Only an administrator can add trainers or change pay.
-          </p>
-        )}
       </div>
       {open && canAdminister && (
         <section className="panel form-panel">
@@ -5752,19 +6093,32 @@ function Trainers({
             {rows.map((trainer) => {
               const pay = Number(trainer.pay_amount || trainer.monthly_pay || 0);
               return (
-                <tr key={trainer.id}>
-                  <td>
-                    {trainer.first_name} {trainer.last_name}
+                <tr className="record-card record-card-trainer" key={trainer.id}>
+                  <td className="record-name" data-label="Trainer">
+                    <strong>
+                      {trainer.first_name} {trainer.last_name}
+                    </strong>
+                    {trainer.is_paid ? (
+                      <Badge value="paid" payment />
+                    ) : pay > 0 ? (
+                      <Badge value="unpaid" payment />
+                    ) : (
+                      <span className="status">No pay</span>
+                    )}
                     <small>{trainer.phone || "No phone"}</small>
                   </td>
-                  <td>{trainer.specialization || "—"}</td>
-                  <td>{Number(trainer.monthly_pay) ? money(trainer.monthly_pay) : "—"}</td>
-                  <td className="table-money">
+                  <td className="record-plan" data-label={t("train.spec")}>
+                    {trainer.specialization || "—"}
+                  </td>
+                  <td className="record-period" data-label={t("train.monthly")}>
+                    {Number(trainer.monthly_pay) ? money(trainer.monthly_pay) : "—"}
+                  </td>
+                  <td className="record-owing table-money" data-label={t("train.thisMonth")}>
                     <strong className={pay > 0 && !trainer.is_paid ? "amount-owing" : "amount-settled"}>
                       {pay ? money(pay) : "—"}
                     </strong>
                   </td>
-                  <td>
+                  <td className="record-pay" data-label={t("train.paid")}>
                     {trainer.is_paid ? (
                       <Badge value="paid" payment />
                     ) : pay > 0 ? (
@@ -5774,15 +6128,17 @@ function Trainers({
                     )}
                   </td>
                   {canAdminister ? (
-                    <td>
+                    <td className="record-actions" data-label={t("common.actions")}>
                       <div className="table-actions">
                         <button
+                          type="button"
                           className="text-button"
                           onClick={() => recordWork(trainer)}
                         >
                           Set pay
                         </button>
                         <button
+                          type="button"
                           className={`payment-status-action ${trainer.is_paid ? "paid" : "unpaid"}`}
                           title={trainer.is_paid ? "Mark unpaid" : "Mark paid"}
                           aria-label={trainer.is_paid ? "Mark unpaid" : "Mark paid"}
@@ -5798,6 +6154,7 @@ function Trainers({
                           {trainer.is_paid ? <Check size={12} strokeWidth={2.25} /> : <X size={12} strokeWidth={2.25} />}
                         </button>
                         <button
+                          type="button"
                           className="text-button"
                           onClick={() => {
                             if (window.confirm(t("train.confirmDelete", { name: `${trainer.first_name} ${trainer.last_name}` }))) {
@@ -5817,9 +6174,7 @@ function Trainers({
         </table>
         {!rows.length && (
           <div className="empty">
-            {canAdminister
-              ? "No trainers yet. Add a trainer to track hours and pay."
-              : "No trainers found."}
+            {canAdminister ? t("train.empty") : t("train.none")}
           </div>
         )}
       </section>
@@ -5894,41 +6249,45 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
           <h2>{t("rep.title")}</h2>
           <p>{canAdminister ? t("rep.admin") : t("rep.staff")}</p>
         </div>
+        {canAdminister && (
+          <div className="reports-export">
+            <button
+              type="button"
+              className="secondary"
+              disabled={Boolean(exporting)}
+              aria-label={exporting === "xlsx" ? t("rep.exporting") : t("rep.excel")}
+              onClick={() => void downloadReport("xlsx")}
+            >
+              <FileSpreadsheet size={15} />
+              <span>{exporting === "xlsx" ? t("rep.exporting") : t("rep.excel")}</span>
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={Boolean(exporting)}
+              aria-label={exporting === "pdf" ? t("rep.exporting") : t("rep.pdf")}
+              onClick={() => void downloadReport("pdf")}
+            >
+              <FileText size={15} />
+              <span>{exporting === "pdf" ? t("rep.exporting") : t("rep.pdf")}</span>
+            </button>
+          </div>
+        )}
         <div className="reports-toolbar">
-          <select
-            className="ledger-select"
-            value={selected}
-            aria-label={t("common.month")}
-            onChange={(event) => setSelected(event.target.value)}
-          >
-            {months.map((item) => (
-              <option key={`${item.year}-${item.month}`} value={`${item.year}-${item.month}`}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-          {canAdminister && (
-            <>
-              <button
-                type="button"
-                className="secondary"
-                disabled={Boolean(exporting)}
-                onClick={() => void downloadReport("xlsx")}
-              >
-                <FileSpreadsheet size={15} />
-                {exporting === "xlsx" ? t("rep.exporting") : t("rep.excel")}
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={Boolean(exporting)}
-                onClick={() => void downloadReport("pdf")}
-              >
-                <FileText size={15} />
-                {exporting === "pdf" ? t("rep.exporting") : t("rep.pdf")}
-              </button>
-            </>
-          )}
+          <div className="reports-month-field">
+            <select
+              className="ledger-select reports-month-select"
+              value={selected}
+              aria-label={t("common.month")}
+              onChange={(event) => setSelected(event.target.value)}
+            >
+              {months.map((item) => (
+                <option key={`${item.year}-${item.month}`} value={`${item.year}-${item.month}`}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
       {error && <div className="error app-banner">{error}</div>}
@@ -5964,7 +6323,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
               className={net >= 0 ? "sage" : "coral"}
             />
           </div>
-          <section className="panel reports-panel">
+          <section className="panel reports-panel reports-pl-panel">
             <div className="reports-section-head">
               <span className="eyebrow">{t("rep.pl")}</span>
               <h3>{overview?.label || t("dash.thisMonth")}</h3>
@@ -5972,27 +6331,31 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
             {loading && <div className="empty">{t("rep.calc")}</div>}
             {!loading && overview && (
               <div className="reports-pl">
-                <p className="reports-pl-label">{t("rep.in")}</p>
-                <div className="reports-pl-row">
-                  <span>{t("rep.collected")}</span>
-                  <strong className="amount-settled">{money(overview.collected)}</strong>
+                <div className="reports-pl-group">
+                  <p className="reports-pl-label">{t("rep.in")}</p>
+                  <div className="reports-pl-row">
+                    <span>{t("rep.collected")}</span>
+                    <strong className="amount-settled">{money(overview.collected)}</strong>
+                  </div>
+                  <div className="reports-pl-row muted">
+                    <span>{t("rep.expected")}</span>
+                    <strong>{money(overview.expected)}</strong>
+                  </div>
+                  <div className="reports-pl-row muted">
+                    <span>{t("rep.owed")}</span>
+                    <strong className="amount-owing">{money(overview.outstanding)}</strong>
+                  </div>
                 </div>
-                <div className="reports-pl-row muted">
-                  <span>{t("rep.expected")}</span>
-                  <strong>{money(overview.expected)}</strong>
-                </div>
-                <div className="reports-pl-row muted">
-                  <span>{t("rep.owed")}</span>
-                  <strong className="amount-owing">{money(overview.outstanding)}</strong>
-                </div>
-                <p className="reports-pl-label">{t("rep.out")}</p>
-                <div className="reports-pl-row">
-                  <span>{t("rep.operatingExp")}</span>
-                  <strong className="amount-owing">{money(overview.operating_total)}</strong>
-                </div>
-                <div className="reports-pl-row">
-                  <span>{t("rep.trainerDue")}</span>
-                  <strong className="amount-owing">{money(overview.trainer_due)}</strong>
+                <div className="reports-pl-group">
+                  <p className="reports-pl-label">{t("rep.out")}</p>
+                  <div className="reports-pl-row">
+                    <span>{t("rep.operatingExp")}</span>
+                    <strong className="amount-owing">{money(overview.operating_total)}</strong>
+                  </div>
+                  <div className="reports-pl-row">
+                    <span>{t("rep.trainerDue")}</span>
+                    <strong className="amount-owing">{money(overview.trainer_due)}</strong>
+                  </div>
                 </div>
                 <div className="reports-pl-row total">
                   <span>{net >= 0 ? t("rep.leftover") : t("rep.shortfall")}</span>
@@ -6023,21 +6386,21 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
                         ? (Number(item.total) / Number(overview.operating_total)) * 100
                         : 0;
                       return (
-                        <tr key={item.category}>
-                          <td>{item.category_label}</td>
-                          <td>{item.count}</td>
-                          <td className="table-money">{money(item.total)}</td>
-                          <td>{share.toFixed(0)}%</td>
+                        <tr className="record-card record-card-report" key={item.category}>
+                          <td className="record-name" data-label={t("exp.category")}>{item.category_label}</td>
+                          <td className="record-plan" data-label={t("rep.items")}>{item.count}</td>
+                          <td className="record-owing table-money" data-label={t("common.amount")}>{money(item.total)}</td>
+                          <td className="record-pay" data-label={t("rep.share")}>{share.toFixed(0)}%</td>
                         </tr>
                       );
                     })}
                   </tbody>
                   <tfoot>
-                    <tr>
-                      <td>Total</td>
-                      <td>{overview.expenses.length}</td>
-                      <td className="table-money">{money(overview.operating_total)}</td>
-                      <td>100%</td>
+                    <tr className="record-card record-card-report record-card-total">
+                      <td className="record-name">Total</td>
+                      <td className="record-plan" data-label={t("rep.items")}>{overview.expenses.length}</td>
+                      <td className="record-owing table-money" data-label={t("common.amount")}>{money(overview.operating_total)}</td>
+                      <td className="record-pay" data-label={t("rep.share")}>100%</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -6052,13 +6415,13 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
                     </thead>
                     <tbody>
                       {overview.expenses.map((expense) => (
-                        <tr key={expense.id}>
-                          <td>{expense.category_label}</td>
-                          <td>
+                        <tr className="record-card record-card-report" key={expense.id}>
+                          <td className="record-plan" data-label={t("exp.category")}>{expense.category_label}</td>
+                          <td className="record-name" data-label={t("rep.desc")}>
                             {expense.title || "—"}
                             {expense.notes ? <small>{expense.notes}</small> : null}
                           </td>
-                          <td className="table-money">{money(expense.amount)}</td>
+                          <td className="record-owing table-money" data-label={t("common.amount")}>{money(expense.amount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -6103,7 +6466,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
           />
         </div>
       )}
-      <section className="panel reports-panel">
+      <section className="panel table-wrap reports-panel">
         <div className="reports-section-head">
           <span className="eyebrow">{t("rep.byClass")}</span>
           <h3>{report?.label || t("rep.breakdown")}</h3>
@@ -6155,24 +6518,24 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
               </thead>
               <tbody>
                 {rows.map((item) => (
-                  <tr key={item.id ?? "unassigned"}>
-                    <td>
+                  <tr className="record-card record-card-report" key={item.id ?? "unassigned"}>
+                    <td className="record-name" data-label={t("rep.classes")}>
                       {item.name}
                       <small>{item.class_type_label}</small>
                     </td>
-                    <td>{item.member_count}</td>
-                    <td className="table-money">{money(item.expected_monthly)}</td>
-                    <td className="table-money">{money(item.collected)}</td>
-                    <td className="table-money">{money(item.outstanding)}</td>
+                    <td className="record-plan" data-label={t("nav.members")}>{item.member_count}</td>
+                    <td className="record-period table-money" data-label={t("rep.expectedBar")}>{money(item.expected_monthly)}</td>
+                    <td className="record-owing table-money" data-label={t("rep.collectedBar")}>{money(item.collected)}</td>
+                    <td className="record-pay table-money" data-label={t("rep.owed")}>{money(item.outstanding)}</td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
-                <tr>
-                  <td colSpan={2}>Total</td>
-                  <td className="table-money">{money(report?.total_expected || 0)}</td>
-                  <td className="table-money">{money(report?.total_collected || 0)}</td>
-                  <td className="table-money">{money(report?.total_outstanding || 0)}</td>
+                <tr className="record-card record-card-report record-card-total">
+                  <td className="record-name" colSpan={2}>Total</td>
+                  <td className="record-period table-money" data-label={t("rep.expectedBar")}>{money(report?.total_expected || 0)}</td>
+                  <td className="record-owing table-money" data-label={t("rep.collectedBar")}>{money(report?.total_collected || 0)}</td>
+                  <td className="record-pay table-money" data-label={t("rep.owed")}>{money(report?.total_outstanding || 0)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -6202,15 +6565,15 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
                 {payroll.trainers.map((trainer) => {
                   const pay = Number(trainer.pay_amount || trainer.monthly_pay || 0);
                   return (
-                    <tr key={trainer.id}>
-                      <td>{trainer.name}</td>
-                      <td>{trainer.specialization || "—"}</td>
-                      <td className="table-money">
+                    <tr className="record-card record-card-report" key={trainer.id}>
+                      <td className="record-name" data-label={t("train.title")}>{trainer.name}</td>
+                      <td className="record-plan" data-label={t("train.spec")}>{trainer.specialization || "—"}</td>
+                      <td className="record-owing table-money" data-label={t("train.monthly")}>
                         <strong className={pay > 0 && !trainer.is_paid ? "amount-owing" : "amount-settled"}>
                           {pay ? money(pay) : "—"}
                         </strong>
                       </td>
-                      <td>
+                      <td className="record-pay" data-label={t("common.status")}>
                         {trainer.is_paid ? (
                           <Badge value="paid" payment />
                         ) : pay > 0 ? (
@@ -6224,10 +6587,10 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
                 })}
               </tbody>
               <tfoot>
-                <tr>
-                  <td colSpan={2}>Total</td>
-                  <td className="table-money">{money(payroll.total_due)}</td>
-                  <td>
+                <tr className="record-card record-card-report record-card-total">
+                  <td className="record-name" colSpan={2}>Total</td>
+                  <td className="record-owing table-money" data-label={t("train.monthly")}>{money(payroll.total_due)}</td>
+                  <td className="record-pay" data-label={t("common.status")}>
                     {t("rep.paidLeft", {
                       paid: money(payroll.total_paid),
                       left: money(payroll.total_unpaid),

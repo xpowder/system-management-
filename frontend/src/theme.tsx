@@ -75,7 +75,7 @@ export function ThemeSwitch() {
       title={t(next === "dark" ? "theme.dark" : "theme.light")}
       aria-label={t("theme.toggle")}
     >
-      {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+      {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
     </button>
   );
 }

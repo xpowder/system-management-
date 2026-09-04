@@ -3,7 +3,9 @@ import GymApp from './GymApp'
 import { bookingApi } from './api'
 import { LanguageSwitch, useLang } from './i18n'
 import { ThemeSwitch } from './theme'
+import { Field } from './ui'
 import './App.css'
+import './design-system.css'
 
 export default function App() {
 	const { t } = useLang()
@@ -60,8 +62,12 @@ export default function App() {
 				<p>{t('auth.intro')}</p>
 				{error && <div className="error auth-error">{error}</div>}
 				<form onSubmit={submit}>
-					<label>{t('auth.username')}<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label>
-					<label>{t('auth.password')}<input type="password" required autoComplete="current-password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label>
+					<Field label={t('auth.username')}>
+						<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} />
+					</Field>
+					<Field label={t('auth.password')}>
+						<input type="password" required autoComplete="current-password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} />
+					</Field>
 					<button className="primary auth-submit" type="submit" disabled={submitting}>
 						{submitting ? t('auth.signingIn') : t('auth.signIn')}
 					</button>
