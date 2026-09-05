@@ -2773,6 +2773,10 @@ select{
     overflow:hidden;
     text-overflow:ellipsis;
   }
+  .reminders-page .reminder-today{
+    color:var(--muted);
+    font-weight:600;
+  }
   .reminders-page .reminder-phone-row{
     display:flex;
     align-items:baseline;
@@ -2804,7 +2808,7 @@ select{
   }
   .reminders-page .reminder-phone-actions{
     display:grid;
-    grid-template-columns:repeat(3,minmax(0,1fr));
+    grid-template-columns:repeat(2,minmax(0,1fr));
     align-items:center;
     gap:var(--space-sm);
     width:100%;
@@ -2813,7 +2817,6 @@ select{
     padding-top:var(--space-md);
     border-top:1px solid var(--line);
   }
-  .reminders-page .reminder-phone-actions .secondary.reminder-mark-paid,
   .reminders-page .reminder-phone-actions .whatsapp-button,
   .reminders-page .reminder-phone-actions .icon-button.reminder-copy{
     display:inline-flex;
@@ -2835,7 +2838,6 @@ select{
     border:0;
     color:#fff;
   }
-  .reminders-page .reminder-phone-actions .secondary.reminder-mark-paid svg,
   .reminders-page .reminder-phone-actions .whatsapp-button svg,
   .reminders-page .reminder-phone-actions .icon-button.reminder-copy svg{
     width:14px;

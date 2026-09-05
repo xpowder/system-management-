@@ -1667,25 +1667,6 @@ function RemindersPage() {
     }
   };
 
-  const markPaid = async (item: WhatsAppReminder) => {
-    setMarkingPaid(item.membership_id);
-    setError("");
-    try {
-      await gymApi.updatePaymentStatus(item.membership_id, "paid");
-      setNotice(t("remind.paidOk", { name: item.member_name }));
-      setSelected((current) => {
-        const next = new Set(current);
-        next.delete(item.membership_id);
-        return next;
-      });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("remind.paidFail"));
-    } finally {
-      setMarkingPaid(0);
-    }
-  };
-
   const items = (data?.items ?? []).filter((item) => {
     if (filter === "all") return true;
     if (filter === "missing_phone") return !item.whatsapp_url;
@@ -1696,7 +1677,6 @@ function RemindersPage() {
   const [queue, setQueue] = useState<WhatsAppReminder[]>([]);
   const [queueIndex, setQueueIndex] = useState(0);
   const [sending, setSending] = useState(false);
-  const [markingPaid, setMarkingPaid] = useState(0);
   const queueSent = useRef(0);
   useEffect(() => {
     setShown(PAGE_SIZE);
@@ -1808,6 +1788,11 @@ function RemindersPage() {
           <strong>{data?.expired ?? 0}</strong>
           <small>{t("remind.last60")}</small>
         </button>
+        <button type="button" className={`ledger-stat ${filter === "missing_phone" ? "active" : ""}`} onClick={() => setFilter("missing_phone")}>
+          <span>{t("common.noPhone")}</span>
+          <strong>{data?.missing_phone ?? 0}</strong>
+          <small>{t("remind.missing", { n: data?.missing_phone ?? 0 })}</small>
+        </button>
       </div>
       <section className="panel table-wrap reports-panel reminder-panel">
         {queue.length > 0 ? (
@@ -1909,7 +1894,10 @@ function RemindersPage() {
                   </div>
                 </header>
                 <div className="reminder-phone-body">
-                  <p className="reminder-phone-number">{item.phone || t("common.noPhone")}</p>
+                  <p className="reminder-phone-number">
+                    {item.phone || t("common.noPhone")}
+                    {item.reminded_today ? <span className="reminder-today"> · {t("remind.today")}</span> : null}
+                  </p>
                   <div className="reminder-phone-row">
                     <p className="reminder-phone-when">
                       {date(item.end_date)}
@@ -1928,20 +1916,7 @@ function RemindersPage() {
                   </div>
                 </div>
                 <div className="reminder-phone-actions" onClick={(event) => event.stopPropagation()}>
-                  {Number(item.remaining) > 0 || item.reasons.includes("unpaid") ? (
-                    <button
-                      type="button"
-                      className="secondary reminder-mark-paid"
-                      disabled={markingPaid === item.membership_id}
-                      onClick={() => void markPaid(item)}
-                      aria-label={t("remind.markPaid")}
-                      title={t("remind.markPaid")}
-                    >
-                      <Check size={16} />
-                      {t("remind.paidShort")}
-                    </button>
-                  ) : null}
-                  {item.whatsapp_url ? (
+                  {canSend(item) ? (
                     <button
                       type="button"
                       className="whatsapp-button"
@@ -2037,7 +2012,7 @@ function RemindersPage() {
                   <td className="record-pay" data-label={t("common.phone")}>{item.phone || t("common.noPhone")}</td>
                   <td className="record-actions" data-label={t("common.actions")}>
                     <div className="table-actions reminder-actions">
-                      {item.whatsapp_url ? (
+                      {canSend(item) ? (
                         <button
                           type="button"
                           className="icon-button whatsapp-button"
