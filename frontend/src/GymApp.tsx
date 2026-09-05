@@ -1667,6 +1667,25 @@ function RemindersPage() {
     }
   };
 
+  const markPaid = async (item: WhatsAppReminder) => {
+    setMarkingPaid(item.membership_id);
+    setError("");
+    try {
+      await gymApi.updatePaymentStatus(item.membership_id, "paid");
+      setNotice(t("remind.paidOk", { name: item.member_name }));
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(item.membership_id);
+        return next;
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("remind.paidFail"));
+    } finally {
+      setMarkingPaid(0);
+    }
+  };
+
   const items = (data?.items ?? []).filter((item) => {
     if (filter === "all") return true;
     if (filter === "missing_phone") return !item.whatsapp_url;
@@ -1677,6 +1696,7 @@ function RemindersPage() {
   const [queue, setQueue] = useState<WhatsAppReminder[]>([]);
   const [queueIndex, setQueueIndex] = useState(0);
   const [sending, setSending] = useState(false);
+  const [markingPaid, setMarkingPaid] = useState(0);
   const queueSent = useRef(0);
   useEffect(() => {
     setShown(PAGE_SIZE);
@@ -1854,16 +1874,30 @@ function RemindersPage() {
                 aria-pressed={selected.has(item.membership_id)}
                 aria-label={t("remind.selectMember", { name: item.member_name })}
                 onClick={() => {
-                  if (canSend(item)) toggleSelected(item.membership_id);
+                  if (canSend(item) && !selected.has(item.membership_id)) toggleSelected(item.membership_id);
                 }}
                 onKeyDown={(event) => {
-                  if (!canSend(item)) return;
+                  if (!canSend(item) || selected.has(item.membership_id)) return;
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     toggleSelected(item.membership_id);
                   }
                 }}
               >
+                {selected.has(item.membership_id) ? (
+                  <button
+                    type="button"
+                    className="icon-button reminder-phone-clear"
+                    aria-label={t("common.close")}
+                    title={t("common.close")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleSelected(item.membership_id);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                ) : null}
                 <header className="reminder-phone-head">
                   <strong className="reminder-phone-name">{item.member_name}</strong>
                   <div className="reminder-phone-tags">
@@ -1894,6 +1928,19 @@ function RemindersPage() {
                   </div>
                 </div>
                 <div className="reminder-phone-actions" onClick={(event) => event.stopPropagation()}>
+                  {Number(item.remaining) > 0 || item.reasons.includes("unpaid") ? (
+                    <button
+                      type="button"
+                      className="secondary reminder-mark-paid"
+                      disabled={markingPaid === item.membership_id}
+                      onClick={() => void markPaid(item)}
+                      aria-label={t("remind.markPaid")}
+                      title={t("remind.markPaid")}
+                    >
+                      <Check size={16} />
+                      {t("remind.paidShort")}
+                    </button>
+                  ) : null}
                   {item.whatsapp_url ? (
                     <button
                       type="button"

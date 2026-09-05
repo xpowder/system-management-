@@ -2679,6 +2679,7 @@ select{
     flex-direction:column;
   }
   .reminders-page .reminder-phone-card{
+    position:relative;
     display:flex;
     flex-direction:column;
     gap:var(--space-md);
@@ -2689,8 +2690,15 @@ select{
     border-bottom:1px solid var(--line);
     cursor:pointer;
   }
+  .reminders-page .reminder-phone-card.is-selected .reminder-phone-head{
+    padding-right:20px;
+  }
   .reminders-page .reminder-phone-card.is-selected{
-    background:var(--hover);
+    background:rgba(31,139,77,.16);
+    box-shadow:inset 3px 0 0 #1f8b4d;
+  }
+  .reminders-page .reminder-phone-card.is-selected .reminder-phone-name{
+    color:#1f8b4d;
   }
   .reminders-page .reminder-phone-card.is-locked{
     cursor:default;
@@ -2716,9 +2724,28 @@ select{
   .reminders-page .reminder-phone-tags{
     display:flex;
     flex:none;
-    flex-wrap:wrap;
+    flex-wrap:nowrap;
+    align-items:center;
     justify-content:flex-end;
     gap:var(--space-xs);
+  }
+  .reminders-page .reminder-phone-clear{
+    position:absolute;
+    top:0;
+    right:0;
+    z-index:1;
+    width:22px;
+    min-width:22px;
+    height:22px;
+    min-height:22px;
+    padding:0;
+    border:0;
+    background:transparent;
+    color:var(--danger,#c4473a);
+  }
+  .reminders-page .reminder-phone-clear:hover{
+    color:var(--danger,#c4473a);
+    background:transparent;
   }
   .reminders-page .reminder-phone-tags .status{
     margin:0;
@@ -2776,7 +2803,8 @@ select{
     white-space:nowrap;
   }
   .reminders-page .reminder-phone-actions{
-    display:flex;
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
     align-items:center;
     gap:var(--space-sm);
     width:100%;
@@ -2785,28 +2813,33 @@ select{
     padding-top:var(--space-md);
     border-top:1px solid var(--line);
   }
-  .reminders-page .reminder-phone-actions .whatsapp-button{
-    flex:0 1 auto;
-    width:auto;
-    max-width:100%;
-    height:var(--control-h);
-    min-height:var(--control-h);
-    padding:0 var(--space-md);
+  .reminders-page .reminder-phone-actions .secondary.reminder-mark-paid,
+  .reminders-page .reminder-phone-actions .whatsapp-button,
+  .reminders-page .reminder-phone-actions .icon-button.reminder-copy{
+    display:inline-flex;
+    align-items:center;
     justify-content:center;
-    font-size:var(--text-md,13px);
+    width:100%;
+    min-width:0;
+    height:32px !important;
+    min-height:32px !important;
+    padding:0 var(--space-xs);
+    gap:4px;
+    font-size:11px;
+    line-height:1;
     border-radius:var(--radius-sm);
+    box-sizing:border-box;
   }
-  .reminders-page .reminder-phone-actions .reminder-copy{
-    flex:none;
-    width:var(--control-h);
-    min-width:var(--control-h);
-    height:var(--control-h);
-    min-height:var(--control-h);
-    padding:0;
+  .reminders-page .reminder-phone-actions .icon-button.reminder-copy{
     background:#1f8b4d;
     border:0;
     color:#fff;
-    border-radius:var(--radius-sm);
+  }
+  .reminders-page .reminder-phone-actions .secondary.reminder-mark-paid svg,
+  .reminders-page .reminder-phone-actions .whatsapp-button svg,
+  .reminders-page .reminder-phone-actions .icon-button.reminder-copy svg{
+    width:14px;
+    height:14px;
   }
   .reminders-page .reminder-send-bar{
     display:flex;
