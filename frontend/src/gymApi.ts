@@ -193,7 +193,7 @@ function requestError(status: number, body: { detail?: string; error?: string } 
           409: 'This operation conflicts with an existing gym record.',
         } as Record<number, string>
       )[status] ||
-      `Request failed (${status})`,
+      'Something went wrong. Please try again.',
   )
 }
 
@@ -208,7 +208,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     if (!response.ok) throw requestError(response.status, body)
     return body as T
   } catch (error) {
-    if (error instanceof TypeError) throw new Error("You're currently offline. Homezup needs an internet connection to access gym data.")
+    if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
     throw error
   }
 }
@@ -240,7 +240,7 @@ async function downloadFile(path: string, fallbackName: string) {
     link.remove()
     URL.revokeObjectURL(url)
   } catch (error) {
-    if (error instanceof TypeError) throw new Error("You're currently offline. Homezup needs an internet connection to access gym data.")
+    if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
     throw error
   }
 }
@@ -320,7 +320,7 @@ export const gymApi = {
       win.location.replace(url)
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (error) {
-      if (error instanceof TypeError) throw new Error("You're currently offline. Homezup needs an internet connection to access gym data.")
+      if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
       throw error
     }
   },

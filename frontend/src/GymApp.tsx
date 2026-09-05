@@ -69,6 +69,16 @@ type OnPayment = (
   payload: PaymentPayload,
 ) => Promise<GymPayment | void> | void;
 
+function classTypeLabel(value: string, t: (key: Msg) => string) {
+  const keys: Record<string, Msg> = {
+    boxing: "class.typeBoxing",
+    kick_boxing: "class.typeKickboxing",
+    musculation: "class.typeMusculation",
+    aerobic: "class.typeAerobic",
+  };
+  return keys[value] ? t(keys[value]) : value.replaceAll("_", " ");
+}
+
 function staffDisplayName(user: {
   first_name?: string;
   last_name?: string;
@@ -537,18 +547,18 @@ export default function GymApp({
       setNotifications(current => current.filter(item => item.id !== id))
       knownNotificationIds.current.delete(id)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to delete notification.")
+      setError(e instanceof Error ? e.message : t("notif.deleteFail"))
     }
   }
   const deleteAllNotifications = async () => {
     if (!notifications.length) return
-    if (!window.confirm("Delete all notifications?")) return
+    if (!window.confirm(t("notif.deleteAllConfirm"))) return
     try {
       await gymApi.deleteAllNotifications()
       setNotifications([])
       knownNotificationIds.current = new Set()
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to delete notifications.")
+      setError(e instanceof Error ? e.message : t("notif.deleteAllFail"))
     }
   }
   const markAllNotificationsRead = async () => {
@@ -556,7 +566,7 @@ export default function GymApp({
       await gymApi.markAllNotificationsRead()
       setNotifications(current => current.map(item => ({ ...item, is_read: true })))
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to mark notifications as read.")
+      setError(e instanceof Error ? e.message : t("notif.readFail"))
     }
   }
   const [dashboard, setDashboard] = useState<GymDashboard | null>(null);
@@ -746,8 +756,8 @@ export default function GymApp({
               amount: paid,
               received_by: loggedInStaffName,
               notes: remainingSpecified
-                ? `Cash payment, remaining ${remaining} DH`
-                : "Cash payment",
+                ? t("pay.cashNoteRemain", { n: remaining ?? 0 })
+                : t("pay.cashNote"),
               remaining,
             });
           }
@@ -836,7 +846,7 @@ export default function GymApp({
   };
 
   const deleteMember = async (memberId: number) => {
-    if (!window.confirm("Delete this member?")) return;
+    if (!window.confirm(t("member.deleteConfirm"))) return;
     try {
       await gymApi.deleteMember(memberId);
       afterSave(t("member.deleted"));
@@ -1005,7 +1015,7 @@ export default function GymApp({
   };
 
   const deleteMembership = async (membershipId: number) => {
-    if (!window.confirm("Delete this membership?")) return;
+    if (!window.confirm(t("membership.deleteConfirm"))) return;
     try {
       await gymApi.deleteMembership(membershipId);
       afterSave(t("membership.deleted"));
@@ -1167,7 +1177,7 @@ export default function GymApp({
                             <small>{date(item.created_at)} · {t(notificationOpenKey(item))}</small>
                           </div>
                           <ChevronRight size={16} className="notification-open-icon" />
-                          <button className="icon-button notification-delete" title={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); void deleteNotification(item.id) }}>
+                          <button className="icon-button notification-delete" title={t("notif.deleteTitle")} aria-label={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); void deleteNotification(item.id) }}>
                             <Trash2 size={14} />
                           </button>
                         </article>
@@ -1425,7 +1435,7 @@ function Notifications({
               <p>{item.message}</p>
               <small>{date(item.created_at)}</small>
             </div>
-            <button type="button" className="icon-button notification-delete" title={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); onDelete(item.id) }}>
+            <button type="button" className="icon-button notification-delete" title={t("notif.deleteTitle")} aria-label={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); onDelete(item.id) }}>
               <Trash2 size={15} />
             </button>
           </article>
@@ -1557,7 +1567,7 @@ function Dashboard({
                   <strong>{item.name}</strong>
                   <small>
                     {t("dash.classMembers", { n: item.member_count })}
-                    {item.class_type ? ` · ${item.class_type}` : ""}
+                    {item.class_type ? ` · ${classTypeLabel(item.class_type, t)}` : ""}
                   </small>
                 </span>
                 <span className={`status ${item.is_active ? "active" : "expired"}`}>
@@ -2081,7 +2091,7 @@ function ExpensesPage() {
     try {
       setExpenses(await gymApi.expenses(year, month));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to load expenses.");
+      setError(e instanceof Error ? e.message : t("exp.loadFail"));
       setExpenses([]);
     } finally {
       setLoading(false);
@@ -2095,7 +2105,7 @@ function ExpensesPage() {
   const add = async () => {
     const amount = Number(form.amount);
     if (!amount || amount <= 0) {
-      setError("Enter an amount greater than 0.");
+      setError(t("exp.amountErr"));
       return;
     }
     setError("");
@@ -2109,21 +2119,21 @@ function ExpensesPage() {
         notes: form.notes.trim(),
       });
       setForm({ category: form.category, title: "", amount: "", notes: "" });
-      setNotice("Expense recorded.");
+      setNotice(t("exp.saved"));
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to save expense.");
+      setError(e instanceof Error ? e.message : t("exp.saveFail"));
     }
   };
 
   const remove = async (expense: GymExpense) => {
-    if (!window.confirm(`Delete ${expense.title || expense.category_label} (${money(expense.amount)})?`)) return;
+    if (!window.confirm(t("exp.deleteConfirm", { name: expense.title || expense.category_label, amount: money(expense.amount) }))) return;
     try {
       await gymApi.deleteExpense(expense.id);
-      setNotice("Expense deleted.");
+      setNotice(t("exp.deleted"));
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to delete expense.");
+      setError(e instanceof Error ? e.message : t("exp.deleteFail"));
     }
   };
 
@@ -2160,40 +2170,40 @@ function ExpensesPage() {
       <div className="stats-grid reports-stats">
         <Stat
           icon={CircleDollarSign}
-          label="Spent this month"
+          label={t("exp.spent")}
           value={money(total)}
-          detail={`${expenses.length} expense${expenses.length === 1 ? "" : "s"}`}
+          detail={t(expenses.length === 1 ? "exp.count" : "exp.countPlural", { n: expenses.length })}
           className="coral"
         />
         <Stat
           icon={ClipboardList}
-          label="Categories used"
+          label={t("exp.categories")}
           value={byCategory.length}
-          detail="Bills, cleaning, supplies..."
+          detail={t("exp.catDetail")}
           className="gold"
         />
         <Stat
           icon={Activity}
-          label="Biggest cost"
+          label={t("exp.biggest")}
           value={byCategory.length ? money(Math.max(...byCategory.map((item) => item.total))) : "—"}
-          detail={byCategory.length ? [...byCategory].sort((a, b) => b.total - a.total)[0].label : "No expenses yet"}
+          detail={byCategory.length ? t(`cat.${[...byCategory].sort((a, b) => b.total - a.total)[0].value}` as Msg) : t("exp.noneYet")}
           className="ink"
         />
         <Stat
           icon={Activity}
-          label="Average charge"
+          label={t("exp.average")}
           value={expenses.length ? money(total / expenses.length) : "—"}
-          detail="Per recorded expense"
+          detail={t("exp.per")}
           className="sage"
         />
       </div>
       <section className="panel table-wrap reports-panel">
         <div className="reports-panel-head">
           <div>
-            <span className="eyebrow">ADD EXPENSE</span>
-            <h3>New charge</h3>
+            <span className="eyebrow">{t("exp.add")}</span>
+            <h3>{t("exp.new")}</h3>
           </div>
-          <p>Pick a category, add a short description if you want, then enter the amount in MAD.</p>
+          <p>{t("exp.addHelp")}</p>
         </div>
         <form
           className="expense-form"
@@ -2204,20 +2214,20 @@ function ExpensesPage() {
         >
           <div className="expense-fields">
             <label className="expense-field">
-              Category
+              {t("exp.category")}
               <select
                 value={form.category}
                 onChange={(event) => setForm({ ...form, category: event.target.value })}
               >
                 {EXPENSE_CATEGORIES.map((item) => (
                   <option key={item.value} value={item.value}>
-                    {item.label}
+                    {t(`cat.${item.value}` as Msg)}
                   </option>
                 ))}
               </select>
             </label>
             <label className="expense-field expense-field-amount">
-              Amount (MAD)
+              {t("exp.amount")}
               <input
                 type="number"
                 min="0.01"
@@ -2229,25 +2239,25 @@ function ExpensesPage() {
               />
             </label>
             <label className="expense-field expense-field-wide">
-              Description
+              {t("exp.description")}
               <input
                 value={form.title}
                 onChange={(event) => setForm({ ...form, title: event.target.value })}
-                placeholder="Cleaning lady, ONEE bill..."
+                placeholder={t("exp.descPh")}
               />
             </label>
             <label className="expense-field expense-field-wide">
-              Notes (optional)
+              {t("common.notesOptional")}
               <input
                 value={form.notes}
                 onChange={(event) => setForm({ ...form, notes: event.target.value })}
-                placeholder="Invoice number, paid to..."
+                placeholder={t("exp.notesPh")}
               />
             </label>
           </div>
           <div className="expense-form-actions">
             <button className="primary" type="submit">
-              <Plus size={16} /> Add expense
+              <Plus size={16} /> {t("exp.add")}
             </button>
           </div>
         </form>
@@ -2256,10 +2266,10 @@ function ExpensesPage() {
         <div className="ledger-stats category-cards">
           {byCategory.map((item) => (
             <div className="ledger-stat" key={item.value}>
-              <span>{item.label}</span>
+              <span>{t(`cat.${item.value}` as Msg)}</span>
               <strong>{money(item.total)}</strong>
               <small>
-                {item.count} item{item.count === 1 ? "" : "s"}
+                {t(item.count === 1 ? "exp.item" : "exp.items", { n: item.count })}
               </small>
             </div>
           ))}
@@ -2268,39 +2278,39 @@ function ExpensesPage() {
       <section className="panel table-wrap reports-panel">
         <div className="reports-panel-head">
           <div>
-            <span className="eyebrow">THIS MONTH</span>
-            <h3>Expense list</h3>
+            <span className="eyebrow">{t("exp.thisMonth")}</span>
+            <h3>{t("exp.list")}</h3>
           </div>
-          <p>Everything recorded for {months.find((item) => `${item.year}-${item.month}` === selected)?.label}.</p>
+          <p>{t("exp.recorded", { month: months.find((item) => `${item.year}-${item.month}` === selected)?.label || "" })}</p>
         </div>
-        {loading && <div className="empty">Loading expenses...</div>}
+        {loading && <div className="empty">{t("exp.loading")}</div>}
         {!loading && !expenses.length && (
-          <div className="empty">No expenses for this month yet. Use the form above to add electricity, water, cleaning, or any other charge.</div>
+          <div className="empty">{t("exp.empty")}</div>
         )}
         {!loading && expenses.length > 0 && (
           <table>
             <thead>
               <tr>
-                <th>Category</th>
-                <th>Description</th>
-                <th>Amount</th>
-                <th>Notes</th>
-                <th>Actions</th>
+                <th>{t("exp.category")}</th>
+                <th>{t("exp.description")}</th>
+                <th>{t("common.amount")}</th>
+                <th>{t("common.notes")}</th>
+                <th>{t("common.actions")}</th>
               </tr>
             </thead>
             <tbody>
               {expenses.map((expense) => (
                 <tr key={expense.id}>
-                  <td data-label="Category">{expense.category_label}</td>
-                  <td data-label="Description">{expense.title || "—"}</td>
-                  <td className="table-money" data-label="Amount">
+                  <td data-label={t("exp.category")}>{EXPENSE_CATEGORIES.some((item) => item.value === expense.category) ? t(`cat.${expense.category}` as Msg) : expense.category_label}</td>
+                  <td data-label={t("exp.description")}>{expense.title || "—"}</td>
+                  <td className="table-money" data-label={t("common.amount")}>
                     <strong className="amount-owing">{money(expense.amount)}</strong>
                   </td>
-                  <td data-label="Notes">{expense.notes || "—"}</td>
-                  <td data-label="Actions">
+                  <td data-label={t("common.notes")}>{expense.notes || "—"}</td>
+                  <td data-label={t("common.actions")}>
                     <div className="table-actions">
                       <button type="button" className="text-button" onClick={() => void remove(expense)}>
-                        Delete
+                        {t("common.delete")}
                       </button>
                     </div>
                   </td>
@@ -2309,7 +2319,7 @@ function ExpensesPage() {
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={2}>Total</td>
+                <td colSpan={2}>{t("common.total")}</td>
                 <td>{money(total)}</td>
                 <td colSpan={2} />
               </tr>
@@ -2344,7 +2354,7 @@ function Administration() {
     try {
       setUsers(await bookingApi.adminUsers(query));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to load users.");
+      setError(e instanceof Error ? e.message : t("admin.loadFail"));
     }
   };
   useEffect(() => {
@@ -2354,7 +2364,7 @@ function Administration() {
   const save = async () => {
     setError("");
     if (editing && form.password && form.password !== form.confirm_password) {
-      setError("Passwords do not match.");
+      setError(t("admin.mismatch"));
       return;
     }
     try {
@@ -2368,7 +2378,7 @@ function Administration() {
         });
       else {
         if (!form.username.trim() || form.password.length < 8) {
-          setError("Username and a password of at least 8 characters are required.");
+          setError(t("admin.usernameReq"));
           return;
         }
         await bookingApi.createAdminUser({
@@ -2380,35 +2390,31 @@ function Administration() {
           role: form.role,
         });
       }
-      setNotice(
-        editing ? "User updated successfully." : "User created successfully.",
-      );
+      setNotice(editing ? t("admin.updated") : t("admin.created"));
       setOpen(false);
       setEditing(null);
       await loadUsers();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to save user.");
+      setError(e instanceof Error ? e.message : t("admin.saveFail"));
     }
   };
   const toggle = async (user: AdminUser) => {
     try {
       await bookingApi.updateAdminUser(user.id, { is_active: !user.is_active });
-      setNotice(
-        `User ${user.is_active ? "deactivated" : "activated"} successfully.`,
-      );
+      setNotice(user.is_active ? t("admin.deactivated") : t("admin.activated"));
       await loadUsers();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to update user.");
+      setError(e instanceof Error ? e.message : t("admin.updateFail"));
     }
   };
   const remove = async (user: AdminUser) => {
-    if (!window.confirm(`Delete ${user.username}?`)) return;
+    if (!window.confirm(t("admin.deleteConfirm", { name: user.username }))) return;
     try {
       await bookingApi.deleteAdminUser(user.id);
-      setNotice("User deleted successfully.");
+      setNotice(t("admin.deleted"));
       await loadUsers();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to delete user.");
+      setError(e instanceof Error ? e.message : t("admin.deleteFail"));
     }
   };
   const startEdit = (user: AdminUser) => {
@@ -2491,7 +2497,7 @@ function Administration() {
           icon={Activity}
           label={t("admin.sessions")}
           value="—"
-          detail="Backend gap"
+          detail={t("admin.sessionsDetail")}
           className="ink"
         />
       </div>
@@ -2510,21 +2516,21 @@ function Administration() {
         <section className="panel member-details-panel admin-user-details">
           <div className="panel-heading">
             <div>
-              <span className="eyebrow">USER DETAILS</span>
+              <span className="eyebrow">{t("admin.details")}</span>
               <h3>{selectedUser.first_name} {selectedUser.last_name}</h3>
             </div>
             <Badge value={selectedUser.is_active ? "active" : "inactive"} />
           </div>
           <div className="info-list">
-            <p><span>Username</span><strong>{selectedUser.username}</strong></p>
-            <p><span>Email</span><strong>{selectedUser.email || "Not provided"}</strong></p>
-            <p><span>Role</span><strong>{selectedUser.role}</strong></p>
-            <p><span>Last login</span><strong>{selectedUser.last_login ? date(selectedUser.last_login) : "Never"}</strong></p>
+            <p><span>{t("admin.username")}</span><strong>{selectedUser.username}</strong></p>
+            <p><span>{t("common.email")}</span><strong>{selectedUser.email || t("admin.notProvided")}</strong></p>
+            <p><span>{t("admin.role")}</span><strong>{selectedUser.role}</strong></p>
+            <p><span>{t("admin.lastLogin")}</span><strong>{selectedUser.last_login ? date(selectedUser.last_login) : t("common.never")}</strong></p>
           </div>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setSelectedUser(null)}>Close</button>
-            <button className="secondary" onClick={() => startEdit(selectedUser)}>Edit user</button>
-            <button className="primary" onClick={() => void remove(selectedUser)}>Delete user</button>
+            <button className="secondary" onClick={() => setSelectedUser(null)}>{t("common.close")}</button>
+            <button className="secondary" onClick={() => startEdit(selectedUser)}>{t("admin.editUser")}</button>
+            <button className="primary" onClick={() => void remove(selectedUser)}>{t("admin.deleteUser")}</button>
           </div>
         </section>
         </div>
@@ -2622,10 +2628,10 @@ function Administration() {
                     setForm({ ...form, role: event.target.value })
                   }
                 >
-                  <option>Admin</option>
-                  <option>Reception</option>
-                  <option>Trainer</option>
-                  <option>Super Admin</option>
+                  <option value="Admin">{t("role.admin")}</option>
+                  <option value="Reception">{t("role.reception")}</option>
+                  <option value="Trainer">{t("role.trainer")}</option>
+                  <option value="Super Admin">{t("role.superAdmin")}</option>
                 </select>
               </Field>
             </FieldGrid>
@@ -2645,12 +2651,12 @@ function Administration() {
         <table>
           <thead>
             <tr>
-              <th>User</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Status</th>
-              <th>Last login</th>
-              <th>Actions</th>
+              <th>{t("admin.user")}</th>
+              <th>{t("common.email")}</th>
+              <th>{t("admin.role")}</th>
+              <th>{t("common.status")}</th>
+              <th>{t("admin.lastLogin")}</th>
+              <th>{t("common.actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -2669,13 +2675,13 @@ function Administration() {
                   <Badge value={user.is_active ? "active" : "inactive"} />
                   <small>{user.username}</small>
                 </td>
-                <td className="record-plan" data-label="Email">{user.email || "—"}</td>
+                <td className="record-plan" data-label={t("common.email")}>{user.email || "—"}</td>
                 <td className="record-owing" data-label={t("admin.role")}>{user.role}</td>
                 <td className="record-pay" data-label={t("common.status")}>
                   <Badge value={user.is_active ? "active" : "inactive"} />
                 </td>
                 <td className="record-period" data-label={t("admin.lastLogin")}>
-                  {user.last_login ? date(user.last_login) : "Never"}
+                  {user.last_login ? date(user.last_login) : t("common.never")}
                 </td>
                 <td className="record-actions" data-label={t("common.actions")}>
                   <div className="table-actions">
@@ -2743,6 +2749,7 @@ function Settings({
     is_active: boolean;
   }) => void;
 }) {
+  const { t } = useLang();
   const [section, setSection] = useState("Classes");
   const [classForm, setClassForm] = useState({
     name: "",
@@ -2757,18 +2764,18 @@ function Settings({
     description: "",
     is_active: true,
   });
-  const sections = [
-    "General",
-    "Gym Information",
-    "Classes",
-    "Membership Plans",
-    "Payments",
-    "Opening Hours",
-    "Members",
-    "Notifications",
-    "Receipts",
-    "Security",
-    "Danger Zone",
+  const sections: Array<{ id: string; label: Msg }> = [
+    { id: "General", label: "settings.general" },
+    { id: "Gym Information", label: "settings.gymInfo" },
+    { id: "Classes", label: "nav.classes" },
+    { id: "Membership Plans", label: "nav.plans" },
+    { id: "Payments", label: "nav.payments" },
+    { id: "Opening Hours", label: "settings.hours" },
+    { id: "Members", label: "nav.members" },
+    { id: "Notifications", label: "nav.notifications" },
+    { id: "Receipts", label: "settings.receipts" },
+    { id: "Security", label: "settings.security" },
+    { id: "Danger Zone", label: "settings.danger" },
   ];
   const createClass = () => {
     if (!classForm.name.trim()) return;
@@ -2804,27 +2811,27 @@ function Settings({
   return (
     <div className="content settings-page">
       <div className="page-intro">
-        <span className="eyebrow">SETTINGS</span>
-        <h2>Settings</h2>
-        <p>Configure the gym using settings supported by the backend.</p>
+        <span className="eyebrow">{t("settings.title")}</span>
+        <h2>{t("settings.title")}</h2>
+        <p>{t("settings.intro")}</p>
       </div>
       <div className="settings-layout">
         <nav className="settings-nav">
           {sections.map((item) => (
             <button
-              className={section === item ? "active" : ""}
-              key={item}
-              onClick={() => setSection(item)}
+              className={section === item.id ? "active" : ""}
+              key={item.id}
+              onClick={() => setSection(item.id)}
             >
-              {item}
+              {t(item.label)}
             </button>
           ))}
         </nav>
         <section className="settings-body">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">{section.toUpperCase()}</span>
-              <h2>{section}</h2>
+              <span className="eyebrow">{t(sections.find((item) => item.id === section)?.label || "settings.title")}</span>
+              <h2>{t(sections.find((item) => item.id === section)?.label || "settings.title")}</h2>
             </div>
           </div>
           {section === "Classes" && (
@@ -2838,14 +2845,14 @@ function Settings({
                       ?.scrollIntoView({ behavior: "smooth" })
                   }
                 >
-                  <Plus size={16} /> Add class
+                  <Plus size={16} /> {t("class.add")}
                 </button>
               </div>
               <section className="panel settings-class-form form-panel">
-                <span className="eyebrow">NEW CLASS</span>
+                <span className="eyebrow">{t("class.create")}</span>
                 <div className="date-fields">
                   <label>
-                    Class name
+                    {t("class.name")}
                     <input
                       value={classForm.name}
                       onChange={(event) =>
@@ -2854,7 +2861,7 @@ function Settings({
                     />
                   </label>
                   <label>
-                    Class type
+                    {t("class.type")}
                     <select
                       value={classForm.class_type}
                       onChange={(event) =>
@@ -2864,16 +2871,16 @@ function Settings({
                         })
                       }
                     >
-                      <option value="boxing">Boxing</option>
-                      <option value="kick_boxing">Kick Boxing</option>
-                      <option value="musculation">Musculation</option>
-                      <option value="aerobic">Aerobic</option>
+                      <option value="boxing">{t("class.typeBoxing")}</option>
+                      <option value="kick_boxing">{t("class.typeKickboxing")}</option>
+                      <option value="musculation">{t("class.typeMusculation")}</option>
+                      <option value="aerobic">{t("class.typeAerobic")}</option>
                     </select>
                   </label>
                 </div>
                 <div className="date-fields">
                   <label>
-                    Price per member
+                    {t("class.price")}
                     <input
                       type="number"
                       min="0"
@@ -2887,7 +2894,7 @@ function Settings({
                     />
                   </label>
                   <label>
-                    Status
+                    {t("common.status")}
                     <select
                       value={String(classForm.is_active)}
                       onChange={(event) =>
@@ -2897,14 +2904,14 @@ function Settings({
                         })
                       }
                     >
-                      <option value="true">Active</option>
-                      <option value="false">Inactive</option>
+                      <option value="true">{t("common.active")}</option>
+                      <option value="false">{t("common.inactive")}</option>
                     </select>
                   </label>
                 </div>
                 <div className="form-actions">
                   <button className="primary" onClick={createClass}>
-                    Create class
+                    {t("class.create")}
                   </button>
                 </div>
               </section>
@@ -2912,10 +2919,10 @@ function Settings({
                 <table>
                   <thead>
                     <tr>
-                      <th>Class</th>
-                      <th>Members</th>
-                      <th>Price</th>
-                      <th>Status</th>
+                      <th>{t("class.name")}</th>
+                      <th>{t("class.members")}</th>
+                      <th>{t("members.price")}</th>
+                      <th>{t("common.status")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2939,10 +2946,10 @@ function Settings({
           {section === "Membership Plans" && (
             <>
               <section className="panel settings-class-form form-panel">
-                <span className="eyebrow">NEW MEMBERSHIP PLAN</span>
+                <span className="eyebrow">{t("plans.create")}</span>
                 <div className="date-fields">
                   <label>
-                    Plan name
+                    {t("plans.name")}
                     <input
                       value={planForm.name}
                       onChange={(event) =>
@@ -2951,7 +2958,7 @@ function Settings({
                     />
                   </label>
                   <label>
-                    Duration in months
+                    {t("plans.duration")}
                     <input
                       type="number"
                       min="1"
@@ -2967,7 +2974,7 @@ function Settings({
                 </div>
                 <div className="date-fields">
                   <label>
-                    Price in MAD
+                    {t("members.priceMad")}
                     <input
                       type="number"
                       min="0"
@@ -2978,7 +2985,7 @@ function Settings({
                     />
                   </label>
                   <label>
-                    Status
+                    {t("common.status")}
                     <select
                       value={String(planForm.is_active)}
                       onChange={(event) =>
@@ -2988,13 +2995,13 @@ function Settings({
                         })
                       }
                     >
-                      <option value="true">Active</option>
-                      <option value="false">Inactive</option>
+                      <option value="true">{t("common.active")}</option>
+                      <option value="false">{t("common.inactive")}</option>
                     </select>
                   </label>
                 </div>
                 <label>
-                  Description
+                  {t("plans.description")}
                   <textarea
                     value={planForm.description}
                     onChange={(event) =>
@@ -3007,7 +3014,7 @@ function Settings({
                 </label>
                 <div className="form-actions">
                   <button className="primary" onClick={createPlan}>
-                    Create plan
+                    {t("plans.create")}
                   </button>
                 </div>
               </section>
@@ -3015,10 +3022,10 @@ function Settings({
                 <table>
                   <thead>
                     <tr>
-                      <th>Plan</th>
-                      <th>Duration</th>
-                      <th>Price</th>
-                      <th>Status</th>
+                      <th>{t("memberships.plan")}</th>
+                      <th>{t("plans.duration")}</th>
+                      <th>{t("members.price")}</th>
+                      <th>{t("common.status")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3026,8 +3033,7 @@ function Settings({
                       <tr key={item.id}>
                         <td>{item.name}</td>
                         <td>
-                          {item.duration_months} month
-                          {item.duration_months > 1 ? "s" : ""}
+                          {item.duration_months === 1 ? t("plans.oneMonth") : t("plans.nMonths", { n: item.duration_months })}
                         </td>
                         <td>{money(item.price)}</td>
                         <td>
@@ -3044,25 +3050,16 @@ function Settings({
           )}
           {section === "Payments" && (
             <section className="panel settings-note">
-              <h3>Payment Settings</h3>
-              <p>
-                Cash payments are supported by the backend. Payment amounts are
-                validated against each membership balance.
-              </p>
-              <p>
-                Card, bank transfer, configurable payment rules, receipts,
-                opening hours and notifications are backend gaps.
-              </p>
+              <h3>{t("settings.paymentsTitle")}</h3>
+              <p>{t("settings.paymentsP1")}</p>
+              <p>{t("settings.paymentsP2")}</p>
             </section>
           )}
           {!["Classes", "Membership Plans", "Payments"].includes(section) && (
             <section className="panel settings-note">
-              <h3>{section}</h3>
-              <p>This setting is not currently exposed by the backend.</p>
-              <p>
-                BACKEND GAP: Add a persisted gym settings model and API
-                endpoints before enabling this section.
-              </p>
+              <h3>{t(sections.find((item) => item.id === section)?.label || "settings.title")}</h3>
+              <p>{t("settings.unavailable")}</p>
+              <p>{t("settings.unavailableHint")}</p>
             </section>
           )}
         </section>
@@ -3267,18 +3264,18 @@ function Members({
     panel.className = "member-details-panel form-panel";
     const label = document.createElement("span");
     label.className = "eyebrow";
-    label.textContent = "EDIT MEMBER";
+    label.textContent = t("members.editHead");
     const heading = document.createElement("h2");
-    heading.textContent = "Update member information";
+    heading.textContent = t("members.updateInfo");
     panel.append(label, heading);
     const fields = [
-      ["First name", names[0] || "", "text"],
-      ["Last name", names.slice(1).join(" ") || "", "text"],
-      ["Phone", member.phone || "", "tel"],
-      ["Email", member.email || "", "email"],
-      ["CIN", member.id_number || "", "text"],
-      ["Address", member.address || "", "text"],
-      ["City", member.city || "", "text"],
+      [t("common.firstName"), names[0] || "", "text"],
+      [t("common.lastName"), names.slice(1).join(" ") || "", "text"],
+      [t("common.phone"), member.phone || "", "tel"],
+      [t("common.email"), member.email || "", "email"],
+      [t("members.cin"), member.id_number || "", "text"],
+      [t("members.address"), member.address || "", "text"],
+      [t("members.city"), member.city || "", "text"],
     ];
     const inputs = fields.map(([fieldLabel, value, type]) => {
       const field = document.createElement("label");
@@ -3293,11 +3290,11 @@ function Members({
     const extraRow = document.createElement("div");
     extraRow.className = "date-fields";
     const classField = document.createElement("label");
-    classField.textContent = "Gym class";
+    classField.textContent = t("members.gymClass");
     const classSelect = document.createElement("select");
     const noneOption = document.createElement("option");
     noneOption.value = "";
-    noneOption.textContent = "No class";
+    noneOption.textContent = t("members.noClass");
     classSelect.append(noneOption);
     classes.forEach((item) => {
       const option = document.createElement("option");
@@ -3308,7 +3305,7 @@ function Members({
     classField.append(classSelect);
     if (member.class_id) classSelect.value = String(member.class_id);
     const priceField = document.createElement("label");
-    priceField.textContent = "Price (DH)";
+    priceField.textContent = t("members.priceMad");
     const priceInput = document.createElement("input");
     priceInput.type = "number";
     priceInput.min = "0";
@@ -3324,7 +3321,7 @@ function Members({
     const remainingRow = document.createElement("div");
     remainingRow.className = "date-fields";
     const remainingField = document.createElement("label");
-    remainingField.textContent = "Still owes (DH)";
+    remainingField.textContent = t("pay.owes");
     const remainingInput = document.createElement("input");
     remainingInput.type = "number";
     remainingInput.min = "0";
@@ -3341,12 +3338,12 @@ function Members({
     const cancel = document.createElement("button");
     cancel.className = "secondary";
     cancel.type = "button";
-    cancel.textContent = "Cancel";
+    cancel.textContent = t("common.cancel");
     cancel.onclick = () => dismissOverlay(overlay);
     const save = document.createElement("button");
     save.className = "primary";
     save.type = "button";
-    save.textContent = "Save changes";
+    save.textContent = t("common.save");
     save.onclick = () => {
       if (!inputs[0].value.trim() || !inputs[1].value.trim()) return;
       const priceValue = priceInput.value.trim();
@@ -3397,7 +3394,7 @@ function Members({
     const currentMembership = membershipFor(member.id);
     const membershipPlanName = currentMembership
       ? plans.find((plan) => plan.id === currentMembership.plan_id)?.name || `Plan #${currentMembership.plan_id}`
-      : "No plan";
+      : t("members.noPlan");
     document.querySelector(".member-details-overlay")?.remove();
     const overlay = document.createElement("div");
     overlay.className = "member-details-overlay";
@@ -3410,13 +3407,13 @@ function Members({
     const close = document.createElement("button");
     close.className = "membership-details-x";
     close.type = "button";
-    close.setAttribute("aria-label", "Close");
+    close.setAttribute("aria-label", t("common.close"));
     close.textContent = "×";
     close.onclick = () => dismissOverlay(overlay);
 
     const eyebrow = document.createElement("span");
     eyebrow.className = "eyebrow";
-    eyebrow.textContent = "MEMBER";
+    eyebrow.textContent = t("members.title");
     const heading = document.createElement("h2");
     heading.textContent = member.name;
     const badges = document.createElement("div");
@@ -3424,12 +3421,12 @@ function Members({
     const membershipStatus = currentMembership?.status ?? "inactive";
     const statusBadge = document.createElement("span");
     statusBadge.className = `status ${membershipStatus === "inactive" ? "expired" : membershipStatus}`;
-    statusBadge.textContent = membershipStatus.replace("_", " ");
+    statusBadge.textContent = statusLabel(membershipStatus);
     badges.append(statusBadge);
     if (currentMembership) {
       const paymentBadge = document.createElement("span");
       paymentBadge.className = `status payment ${currentMembership.payment_status}`;
-      paymentBadge.textContent = currentMembership.payment_status;
+      paymentBadge.textContent = statusLabel(currentMembership.payment_status);
       badges.append(paymentBadge);
     }
 
@@ -3437,9 +3434,9 @@ function Members({
     const owing = document.createElement("div");
     owing.className = remaining > 0 ? "member-card-owing" : "member-card-owing settled";
     const owingLabel = document.createElement("span");
-    owingLabel.textContent = remaining > 0 ? "Still owes" : "Settled";
+    owingLabel.textContent = remaining > 0 ? t("members.stillOwes") : t("members.settled");
     const owingValue = document.createElement("strong");
-    owingValue.textContent = currentMembership ? (remaining > 0 ? money(remaining) : "Paid") : "No plan";
+    owingValue.textContent = currentMembership ? (remaining > 0 ? money(remaining) : t("status.paid")) : t("members.noPlan");
     owing.append(owingLabel, owingValue);
 
     const contact = document.createElement("p");
@@ -3456,9 +3453,9 @@ function Members({
     const facts = document.createElement("div");
     facts.className = "member-card-facts";
     const factRows: Array<[string, string]> = [
-      ["Plan", membershipPlanName],
-      ["Paid", currentMembership ? money(currentMembership.total_paid) : money(0)],
-      ["Ends", currentMembership ? date(currentMembership.end_date) : "—"],
+      [t("memberships.plan"), membershipPlanName],
+      [t("members.paidCol"), currentMembership ? money(currentMembership.total_paid) : money(0)],
+      [t("remind.ends"), currentMembership ? date(currentMembership.end_date) : "—"],
     ];
     factRows.forEach(([key, value]) => {
       const row = document.createElement("div");
@@ -3475,7 +3472,7 @@ function Members({
     const pay = document.createElement("button");
     pay.className = "primary";
     pay.type = "button";
-    pay.textContent = "Pay";
+    pay.textContent = t("members.pay");
     pay.onclick = () => {
       if (!currentMembership) return;
       dismissOverlay(overlay);
@@ -3491,7 +3488,7 @@ function Members({
     const edit = document.createElement("button");
     edit.className = "secondary";
     edit.type = "button";
-    edit.textContent = "Edit";
+    edit.textContent = t("common.edit");
     edit.onclick = () => {
       dismissOverlay(overlay);
       window.setTimeout(() => editMember(member), 160);
@@ -3499,9 +3496,9 @@ function Members({
     const remove = document.createElement("button");
     remove.className = "text-button";
     remove.type = "button";
-    remove.textContent = "Delete";
+    remove.textContent = t("common.delete");
     remove.onclick = () => {
-      if (window.confirm(`Delete ${member.name}?`)) {
+      if (window.confirm(t("member.deleteConfirm"))) {
         dismissOverlay(overlay);
         onDelete(member.id);
       }
@@ -3646,7 +3643,7 @@ function Members({
         }
         window.location.reload();
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "Unable to restore backup.");
+        window.alert(error instanceof Error ? error.message : t("backup.restoreFail"));
       } finally {
         setImporting(false);
       }
@@ -3665,21 +3662,21 @@ function Members({
                 type="button"
                 className="secondary"
                 disabled={importing}
-                aria-label="Export"
+                aria-label={t("common.export")}
                 onClick={() => void exportBackup()}
               >
                 <Download size={15} />
-                <span>Export</span>
+                <span>{t("common.export")}</span>
               </button>
               <button
                 type="button"
                 className="secondary"
                 disabled={importing}
-                aria-label="Import"
+                aria-label={t("common.import")}
                 onClick={() => backupInputRef.current?.click()}
               >
                 <Upload size={15} />
-                <span>{importing ? t("backup.busy") : "Import"}</span>
+                <span>{importing ? t("backup.busy") : t("common.import")}</span>
               </button>
               <button
                 type="button"
@@ -3754,8 +3751,8 @@ function Members({
           value={classFilter}
           onChange={(event) => setClassFilter(event.target.value)}
         >
-          <option value="">All classes</option>
-          <option value="none">No class</option>
+          <option value="">{t("members.allClasses")}</option>
+          <option value="none">{t("members.noClass")}</option>
           {classes.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}
@@ -3767,11 +3764,11 @@ function Members({
           value={statusFilter}
           onChange={(event) => setStatusFilter(event.target.value)}
         >
-          <option value="">All statuses</option>
-          <option value="active">Active</option>
-          <option value="expiring_soon">Expiring soon</option>
-          <option value="expired">Expired</option>
-          <option value="none">No membership</option>
+          <option value="">{t("members.allStatuses")}</option>
+          <option value="active">{t("status.active")}</option>
+          <option value="expiring_soon">{t("status.expiring_soon")}</option>
+          <option value="expired">{t("status.expired")}</option>
+          <option value="none">{t("members.noMembership")}</option>
         </select>
       </div>
       {open && (
@@ -3953,26 +3950,26 @@ function Members({
                     {membership ? (
                       <Badge value={memberStatus || membership.status} />
                     ) : (
-                      <span className="status expired">No plan</span>
+                      <span className="status expired">{t("members.noPlan")}</span>
                     )}
                     <small>
                       {member.id_number ? `CIN ${member.id_number}` : t("members.noCin")}
                       {member.phone ? ` · ${member.phone}` : ""}
                     </small>
                   </td>
-                  <td className="record-plan" data-label={t("members.class")}>{member.class_name || "No class"}</td>
+                  <td className="record-plan" data-label={t("members.class")}>{member.class_name || t("members.noClass")}</td>
                   <td className="record-price" data-label={t("members.price")}>{membership ? money(membership.price) : "—"}</td>
                   <td className="record-paid" data-label={t("members.paidCol")}>{membership ? money(membership.total_paid) : "—"}</td>
                   <td className="record-owing table-money" data-label={t("members.stillOwes")}>
                     <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
-                      {membership ? (remaining > 0 ? money(remaining) : "Settled") : "—"}
+                      {membership ? (remaining > 0 ? money(remaining) : t("members.settled")) : "—"}
                     </strong>
                   </td>
                   <td className="record-pay" data-label={t("members.payment")}>
                     {membership ? (
                       <Badge value={membership.payment_status} payment />
                     ) : (
-                      <span className="status expired">No plan</span>
+                      <span className="status expired">{t("members.noPlan")}</span>
                     )}
                   </td>
                   <td className="record-actions" data-label={t("common.actions")}>
@@ -4151,10 +4148,10 @@ function ClassesPage({
                 value={form.class_type}
                 onChange={(event) => setForm({ ...form, class_type: event.target.value })}
               >
-                <option value="boxing">Boxing</option>
-                <option value="kick_boxing">Kick Boxing</option>
-                <option value="musculation">Musculation</option>
-                <option value="aerobic">Aerobic</option>
+                <option value="boxing">{t("class.typeBoxing")}</option>
+                <option value="kick_boxing">{t("class.typeKickboxing")}</option>
+                <option value="musculation">{t("class.typeMusculation")}</option>
+                <option value="aerobic">{t("class.typeAerobic")}</option>
               </select>
             </label>
           </div>
@@ -4210,7 +4207,7 @@ function ClassesPage({
             </p>
             <p>
               <span>{t("class.type")}</span>
-              <strong>{selected.class_type.replace("_", " ")}</strong>
+              <strong>{classTypeLabel(selected.class_type, t)}</strong>
             </p>
             <p>
               <span>{t("class.price")}</span>
@@ -4253,7 +4250,7 @@ function ClassesPage({
                     <Badge value={item.is_active ? "active" : "inactive"} />
                   </td>
                   <td className="record-owing" data-label={t("class.members")}>{item.member_count}</td>
-                  <td className="record-plan" data-label={t("class.type")}>{item.class_type.replace("_", " ")}</td>
+                  <td className="record-plan" data-label={t("class.type")}>{classTypeLabel(item.class_type, t)}</td>
                   <td className="record-pay" data-label={t("common.status")}>
                     <Badge value={item.is_active ? "active" : "inactive"} />
                   </td>
@@ -4375,7 +4372,7 @@ function Memberships({
   const [renewForm, setRenewForm] = useState({
     plan_id: "",
     start_date: new Date().toISOString().slice(0, 10),
-    notes: "Renewed from admin workspace",
+    notes: t("memberships.renewNote"),
   });
 
   const openRenew = (item: Membership) => {
@@ -4383,7 +4380,7 @@ function Memberships({
     setRenewForm({
       plan_id: String(item.plan_id),
       start_date: item.end_date,
-      notes: `Renewal for ${memberName(item.member_id)}`,
+      notes: t("memberships.renewNoteFor", { name: memberName(item.member_id) }),
     });
   };
 
@@ -4401,11 +4398,11 @@ function Memberships({
     head.className = "membership-details-head";
     const label = document.createElement("span");
     label.className = "eyebrow";
-    label.textContent = "MEMBERSHIP DETAILS";
+    label.textContent = t("membership.details");
     const close = document.createElement("button");
     close.className = "membership-details-x";
     close.type = "button";
-    close.setAttribute("aria-label", "Close");
+    close.setAttribute("aria-label", t("common.close"));
     close.textContent = "×";
     close.onclick = () => dismissOverlay(overlay);
     const heading = document.createElement("h2");
@@ -4414,26 +4411,26 @@ function Memberships({
     badges.className = "membership-details-badges";
     const statusBadge = document.createElement("span");
     statusBadge.className = `status ${item.status}`;
-    statusBadge.textContent = item.status.replace("_", " ");
+    statusBadge.textContent = statusLabel(item.status);
     const paymentBadge = document.createElement("span");
     paymentBadge.className = `status payment ${item.payment_status}`;
-    paymentBadge.textContent = item.payment_status;
+    paymentBadge.textContent = statusLabel(item.payment_status);
     badges.append(statusBadge, paymentBadge);
     head.append(label, close, heading, badges);
 
     const grid = document.createElement("div");
     grid.className = "membership-details-grid";
     const fields = [
-      ["Plan", planName(item.plan_id)],
-      ["Price", money(item.price)],
-      ["Start date", date(item.start_date)],
-      ["Month ends", date(item.end_date)],
-      ["Paid", money(item.total_paid)],
-      ["Still owes", money(item.remaining_balance)],
+      [t("memberships.plan"), planName(item.plan_id)],
+      [t("members.price"), money(item.price)],
+      [t("members.startDate"), date(item.start_date)],
+      [t("remind.ends"), date(item.end_date)],
+      [t("members.paidCol"), money(item.total_paid)],
+      [t("members.stillOwes"), money(item.remaining_balance)],
     ];
     fields.forEach(([key, value]) => {
       const cell = document.createElement("div");
-      if (key === "Still owes" && Number(item.remaining_balance) > 0) cell.className = "remaining";
+      if (key === t("members.stillOwes") && Number(item.remaining_balance) > 0) cell.className = "remaining";
       const caption = document.createElement("span");
       caption.textContent = key;
       const strong = document.createElement("strong");
@@ -4446,23 +4443,23 @@ function Memberships({
     actions.className = "form-actions membership-details-actions";
     const renew = document.createElement("button");
     renew.className = "primary";
-    renew.textContent = "Renew membership";
+    renew.textContent = t("memberships.renew");
     renew.onclick = () => {
       dismissOverlay(overlay);
       openRenew(item);
     };
     const pay = document.createElement("button");
     pay.className = "secondary";
-    pay.textContent = "Record payment";
+    pay.textContent = t("pay.record");
     pay.onclick = () => {
       dismissOverlay(overlay);
       addPayment(item);
     };
     const remove = document.createElement("button");
     remove.className = "secondary";
-    remove.textContent = "Delete";
+    remove.textContent = t("common.delete");
     remove.onclick = () => {
-      if (window.confirm(`Delete membership for ${memberName(item.member_id)}?`)) {
+      if (window.confirm(t("membership.deleteConfirm"))) {
         dismissOverlay(overlay);
         onDelete(item.id);
       }
@@ -4485,7 +4482,7 @@ function Memberships({
     setRenewForm({
       plan_id: "",
       start_date: new Date().toISOString().slice(0, 10),
-      notes: "Renewed from admin workspace",
+      notes: t("memberships.renewNote"),
     });
   };
 
@@ -4502,27 +4499,27 @@ function Memberships({
           className={`ledger-stat ${paymentFilter === "" ? "active" : ""}`}
           onClick={() => setPaymentFilter("")}
         >
-          <span>All plans</span>
+          <span>{t("memberships.all")}</span>
           <strong>{items.length}</strong>
-          <small>Every membership</small>
+          <small>{t("memberships.every")}</small>
         </button>
         <button
           type="button"
           className={`ledger-stat owing ${paymentFilter === "owing" ? "active" : ""}`}
           onClick={() => setPaymentFilter("owing")}
         >
-          <span>Still owe</span>
+          <span>{t("members.stillOwe")}</span>
           <strong>{money(moneySummary.owingTotal)}</strong>
-          <small>{moneySummary.owing} members</small>
+          <small>{t("memberships.owingCount", { n: moneySummary.owing })}</small>
         </button>
         <button
           type="button"
           className={`ledger-stat ${paymentFilter === "paid" ? "active" : ""}`}
           onClick={() => setPaymentFilter("paid")}
         >
-          <span>Paid</span>
+          <span>{t("members.paid")}</span>
           <strong>{moneySummary.paid}</strong>
-          <small>Fully settled</small>
+          <small>{t("memberships.settled")}</small>
         </button>
         <button
           type="button"
@@ -4547,26 +4544,26 @@ function Memberships({
           value={status}
           onChange={(event) => setStatus(event.target.value)}
         >
-          <option value="">All statuses</option>
-          <option value="active">Active</option>
-          <option value="expiring_soon">Expiring soon</option>
-          <option value="expired">Expired</option>
-          <option value="cancelled">Cancelled</option>
+          <option value="">{t("members.allStatuses")}</option>
+          <option value="active">{t("status.active")}</option>
+          <option value="expiring_soon">{t("status.expiring_soon")}</option>
+          <option value="expired">{t("status.expired")}</option>
+          <option value="cancelled">{t("status.cancelled")}</option>
         </select>
       </div>
       {renewId !== null && (
         <section className="panel form-panel">
-          <span className="eyebrow">RENEW MEMBERSHIP</span>
+          <span className="eyebrow">{t("memberships.renew")}</span>
           <div className="date-fields">
             <label>
-              Plan
+              {t("memberships.plan")}
               <select
                 value={renewForm.plan_id}
                 onChange={(event) =>
                   setRenewForm({ ...renewForm, plan_id: event.target.value })
                 }
               >
-                <option value="">Select plan</option>
+                <option value="">{t("members.selectPlan")}</option>
                 {selectablePlans(plans, renewForm.plan_id).map((plan) => (
                   <option key={plan.id} value={plan.id}>
                     {plan.name}
@@ -4575,7 +4572,7 @@ function Memberships({
               </select>
             </label>
             <label>
-              Renew from
+              {t("memberships.renewFrom")}
               <input
                 type="date"
                 value={renewForm.start_date}
@@ -4586,7 +4583,7 @@ function Memberships({
             </label>
           </div>
           <label>
-            Notes
+            {t("common.notes")}
             <input
               value={renewForm.notes}
               onChange={(event) =>
@@ -4596,10 +4593,10 @@ function Memberships({
           </label>
           <div className="form-actions">
             <button className="secondary" onClick={() => setRenewId(null)}>
-              Cancel
+              {t("common.cancel")}
             </button>
             <button className="primary" onClick={submitRenew}>
-              Renew membership
+              {t("memberships.renew")}
             </button>
           </div>
         </section>
@@ -4630,13 +4627,13 @@ function Memberships({
                 <td className="record-plan" data-label={t("memberships.plan")}>{planName(item.plan_id)}</td>
                 <td className="record-period" data-label={t("memberships.period")}>
                   {date(item.start_date)}
-                  <small>to {date(item.end_date)}</small>
+                  <small>{t("memberships.to", { date: date(item.end_date) })}</small>
                 </td>
                 <td className="record-price" data-label={t("members.price")}>{money(item.price)}</td>
                 <td className="record-paid" data-label={t("members.paidCol")}>{money(item.total_paid)}</td>
                 <td className="record-owing table-money" data-label={t("members.stillOwes")}>
                   <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
-                    {remaining > 0 ? money(remaining) : "Settled"}
+                    {remaining > 0 ? money(remaining) : t("members.settled")}
                   </strong>
                 </td>
                 <td className="record-pay" data-label={t("members.payment")}>
@@ -4652,13 +4649,13 @@ function Memberships({
                         addPayment(item);
                       }}
                     >
-                      Payment
+                      {t("pay.record")}
                     </button>
                     <button
                       type="button"
                       className={`payment-status-action ${item.payment_status === "paid" ? "paid" : "unpaid"}`}
-                      title="Mark membership paid"
-                      aria-label="Mark membership paid"
+                      title={t("pay.markPaid")}
+                      aria-label={t("pay.markPaid")}
                       onClick={(event) => {
                         event.stopPropagation();
                         onSetPaymentStatus(item, "paid");
@@ -4669,8 +4666,8 @@ function Memberships({
                     <button
                       type="button"
                       className={`payment-status-action ${item.payment_status === "unpaid" ? "unpaid" : "paid"}`}
-                      title="Mark membership unpaid"
-                      aria-label="Mark membership unpaid"
+                      title={t("pay.markUnpaid")}
+                      aria-label={t("pay.markUnpaid")}
                       onClick={(event) => {
                         event.stopPropagation();
                         onSetPaymentStatus(item, "unpaid");
@@ -4688,7 +4685,7 @@ function Memberships({
         <LoadMoreBar shown={shown} total={visibleItems.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visibleItems.length && (
           <div className="empty">
-            {items.length ? "No memberships match these filters." : "No memberships found."}
+            {items.length ? t("memberships.emptyFilter") : t("memberships.empty")}
           </div>
         )}
       </section>
@@ -6022,7 +6019,7 @@ function Trainers({
     panel.className = "member-details-panel form-panel";
     const label = document.createElement("span");
     label.className = "eyebrow";
-    label.textContent = "TRAINER PAY";
+    label.textContent = t("train.payHead");
     const heading = document.createElement("h2");
     heading.textContent = `${trainer.first_name} ${trainer.last_name}`;
     const monthField = document.createElement("label");
@@ -6123,17 +6120,17 @@ function Trainers({
       </div>
       {open && canAdminister && (
         <section className="panel form-panel">
-          <span className="eyebrow">NEW TRAINER</span>
+          <span className="eyebrow">{t("train.new")}</span>
           <div className="date-fields">
             <label>
-              First name
+              {t("common.firstName")}
               <input
                 value={form.first_name}
                 onChange={(event) => setForm({ ...form, first_name: event.target.value })}
               />
             </label>
             <label>
-              Last name
+              {t("common.lastName")}
               <input
                 value={form.last_name}
                 onChange={(event) => setForm({ ...form, last_name: event.target.value })}
@@ -6142,24 +6139,24 @@ function Trainers({
           </div>
           <div className="date-fields">
             <label>
-              Specialization
+              {t("train.spec")}
               <input
                 value={form.specialization}
                 onChange={(event) => setForm({ ...form, specialization: event.target.value })}
-                placeholder="Boxing, musculation..."
+                placeholder={t("train.specPh")}
               />
             </label>
             <label>
-              Phone
+              {t("common.phone")}
               <input
                 value={form.phone}
                 onChange={(event) => setForm({ ...form, phone: event.target.value })}
               />
             </label>
           </div>
-          <p className="form-caption">Monthly pay</p>
+          <p className="form-caption">{t("train.monthlyCaption")}</p>
           <label>
-            Monthly pay (DH)
+            {t("train.monthlyMad")}
             <input
               type="number"
               min="0"
@@ -6171,10 +6168,10 @@ function Trainers({
           </label>
           <div className="form-actions">
             <button className="secondary" onClick={() => setOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </button>
             <button className="primary" onClick={submit}>
-              Add trainer
+              {t("train.add")}
             </button>
           </div>
         </section>
@@ -6183,12 +6180,12 @@ function Trainers({
         <table>
           <thead>
             <tr>
-              <th>Trainer</th>
-              <th>Specialization</th>
-              <th>Monthly pay</th>
-              <th>This month</th>
-              <th>Paid</th>
-              {canAdminister ? <th>Actions</th> : null}
+              <th>{t("train.trainer")}</th>
+              <th>{t("train.spec")}</th>
+              <th>{t("train.monthly")}</th>
+              <th>{t("train.thisMonth")}</th>
+              <th>{t("train.paid")}</th>
+              {canAdminister ? <th>{t("common.actions")}</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -6196,7 +6193,7 @@ function Trainers({
               const pay = Number(trainer.pay_amount || trainer.monthly_pay || 0);
               return (
                 <tr className="record-card record-card-trainer" key={trainer.id}>
-                  <td className="record-name" data-label="Trainer">
+                  <td className="record-name" data-label={t("train.trainer")}>
                     <strong>
                       {trainer.first_name} {trainer.last_name}
                     </strong>
@@ -6205,9 +6202,9 @@ function Trainers({
                     ) : pay > 0 ? (
                       <Badge value="unpaid" payment />
                     ) : (
-                      <span className="status">No pay</span>
+                      <span className="status">{t("train.noPay")}</span>
                     )}
-                    <small>{trainer.phone || "No phone"}</small>
+                    <small>{trainer.phone || t("common.noPhone")}</small>
                   </td>
                   <td className="record-plan" data-label={t("train.spec")}>
                     {trainer.specialization || "—"}
@@ -6226,7 +6223,7 @@ function Trainers({
                     ) : pay > 0 ? (
                       <Badge value="unpaid" payment />
                     ) : (
-                      <span className="status">No pay</span>
+                      <span className="status">{t("train.noPay")}</span>
                     )}
                   </td>
                   {canAdminister ? (
@@ -6237,13 +6234,13 @@ function Trainers({
                           className="text-button"
                           onClick={() => recordWork(trainer)}
                         >
-                          Set pay
+                          {t("train.setPay")}
                         </button>
                         <button
                           type="button"
                           className={`payment-status-action ${trainer.is_paid ? "paid" : "unpaid"}`}
-                          title={trainer.is_paid ? "Mark unpaid" : "Mark paid"}
-                          aria-label={trainer.is_paid ? "Mark unpaid" : "Mark paid"}
+                          title={trainer.is_paid ? t("pay.markUnpaid") : t("pay.markPaid")}
+                          aria-label={trainer.is_paid ? t("pay.markUnpaid") : t("pay.markPaid")}
                           onClick={() =>
                             onUpdatePayroll(trainer.id, {
                               year,

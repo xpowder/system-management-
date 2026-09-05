@@ -41,10 +41,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     if (token) headers['X-CSRFToken'] = token
     const response = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options, headers })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(body.detail || body.error || ({ 401: 'Your session has expired. Please log in again.', 403: "You don't have permission to perform this action.", 404: 'The requested record was not found.', 409: 'This property is no longer available for the selected dates.' } as Record<number, string>)[response.status] || 'Something went wrong. Please try again.')
+    if (!response.ok) throw new Error(body.detail || body.error || ({ 401: 'Your session has expired. Please log in again.', 403: "You don't have permission to perform this action.", 404: 'The requested record was not found.', 409: 'This operation conflicts with an existing record.' } as Record<number, string>)[response.status] || 'Something went wrong. Please try again.')
     return body as T
   } catch (error) {
-    if (error instanceof TypeError) throw new Error("You're currently offline. Homezup needs an internet connection to access the booking database.")
+    if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to continue.")
     throw error
   }
 }
