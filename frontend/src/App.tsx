@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import GymApp from './GymApp'
-import { bookingApi } from './api'
+import { bookingApi, resetSessionExpiredNotice, setSessionExpiredListener } from './api'
 import { LanguageSwitch, useLang } from './i18n'
 import { ThemeSwitch } from './theme'
 import { Field } from './ui'
+import { unlockNotificationSound } from './notificationSound'
 import './App.css'
 import './design-system.css'
 
@@ -15,6 +16,13 @@ export default function App() {
 	const [error, setError] = useState('')
 	const [form, setForm] = useState({ username: '', password: '' })
 
+	useEffect(() => {
+		setSessionExpiredListener(() => setUser(null))
+		return () => setSessionExpiredListener(null)
+	}, [])
+	useEffect(() => {
+		if (user) resetSessionExpiredNotice()
+	}, [user])
 	useEffect(() => { bookingApi.me().then(setUser).catch(() => undefined).finally(() => setBusy(false)) }, [])
 	if (busy) {
 		return (
@@ -27,10 +35,11 @@ export default function App() {
 			</div>
 		)
 	}
-	if (user) return <GymApp currentUser={user} onLogout={() => setUser(null)} />
+	if (user) return <GymApp currentUser={user} onLogout={() => setUser(null)} onUserUpdated={setUser} />
 
 	const submit = async (event: React.FormEvent) => {
 		event.preventDefault()
+		unlockNotificationSound()
 		setError('')
 		setSubmitting(true)
 		try {

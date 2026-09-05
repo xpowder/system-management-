@@ -33,6 +33,81 @@ function csrfToken() {
   return match ? decodeURIComponent(match[1]) : ''
 }
 
+function humanizeField(name: string) {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function looksLikeStackTrace(text: string) {
+  return /Traceback \(most recent call last\)|File ".*", line \d+|^\s*at \S+ \(/m.test(text)
+}
+
+function flattenApiMessages(value: unknown, field?: string): string[] {
+  if (value == null || value === '') return []
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text || text === '[object Object]' || looksLikeStackTrace(text)) return []
+    if (field && !['detail', 'error', 'message', 'non_field_errors', 'msg'].includes(field)) {
+      return [`${humanizeField(field)}: ${text}`]
+    }
+    return [text]
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)]
+  if (Array.isArray(value)) return value.flatMap((item) => flattenApiMessages(item, field))
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => {
+      if (key === 'traceback' || key === 'exception' || key === 'stack') return []
+      return flattenApiMessages(item, key)
+    })
+  }
+  return []
+}
+
+function isInvalidCredentialsMessage(text: string) {
+  return /invalid username or password|invalid credentials|incorrect password/i.test(text)
+}
+
+type SessionExpiredListener = () => void
+let sessionExpiredListener: SessionExpiredListener | null = null
+let sessionExpiredNotified = false
+
+export function setSessionExpiredListener(listener: SessionExpiredListener | null) {
+  sessionExpiredListener = listener
+}
+
+export function resetSessionExpiredNotice() {
+  sessionExpiredNotified = false
+}
+
+export function notifyIfSessionExpired(status: number, body: unknown) {
+  if (status !== 401) return
+  const joined = flattenApiMessages(body).join(' ').trim()
+  if (isInvalidCredentialsMessage(joined)) return
+  if (sessionExpiredNotified) return
+  sessionExpiredNotified = true
+  sessionExpiredListener?.()
+}
+
+export function formatHttpError(
+  status: number,
+  body: unknown,
+  extras?: { notFound?: string; conflict?: string },
+) {
+  const joined = flattenApiMessages(body).join(' ').trim()
+  if (status === 401) {
+    if (isInvalidCredentialsMessage(joined)) {
+      return joined
+    }
+    return 'Your session has expired. Please log in again.'
+  }
+  if (status === 403) return "You don't have permission to perform this action."
+  if (status === 404) return extras?.notFound || 'The requested record was not found.'
+  if (status >= 500) return 'The server could not complete this request. Please try again.'
+  if (status === 409) return extras?.conflict || joined || 'This operation conflicts with an existing record.'
+  if (joined) return joined
+  if (status === 400) return 'Please check the form and try again.'
+  return 'Something went wrong. Please try again.'
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   try {
     const token = csrfToken()
@@ -41,7 +116,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     if (token) headers['X-CSRFToken'] = token
     const response = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options, headers })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(body.detail || body.error || ({ 401: 'Your session has expired. Please log in again.', 403: "You don't have permission to perform this action.", 404: 'The requested record was not found.', 409: 'This operation conflicts with an existing record.' } as Record<number, string>)[response.status] || 'Something went wrong. Please try again.')
+    if (!response.ok) {
+      notifyIfSessionExpired(response.status, body)
+      throw new Error(formatHttpError(response.status, body))
+    }
     return body as T
   } catch (error) {
     if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to continue.")

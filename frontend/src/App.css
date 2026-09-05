@@ -319,6 +319,11 @@ tbody tr{cursor:pointer}
   width:min(420px,calc(100vw - 32px));
   padding:22px 24px 18px;
 }
+.member-details-panel.form-panel.is-wide{
+  width:min(920px,calc(100vw - 48px));
+  max-height:min(92vh,900px);
+  padding:28px 32px 24px;
+}
 .member-details-panel h2{margin:4px 0 10px;font-size:22px;letter-spacing:-.4px}
 .member-details-panel.member-card h2{margin:4px 0 8px;font-size:24px}
 .member-details-panel.member-card .eyebrow{display:block;margin-bottom:2px}

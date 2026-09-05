@@ -1,4 +1,65 @@
-import type { ReactNode } from "react";
+import type { InputHTMLAttributes, ReactNode } from "react";
+
+export function PageHeader({
+  eyebrow,
+  title,
+  description,
+  actions,
+}: {
+  eyebrow?: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="page-head">
+      <div className="page-intro">
+        {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+        <div className="page-head-title">
+          <h2>{title}</h2>
+          {actions ? <div className="page-head-actions">{actions}</div> : null}
+        </div>
+        {description ? <p>{description}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+export function Alert({
+  children,
+  tone = "danger",
+  onDismiss,
+  dismissLabel,
+}: {
+  children: ReactNode;
+  tone?: "danger" | "success" | "warning";
+  onDismiss?: () => void;
+  dismissLabel?: string;
+}) {
+  return (
+    <div className={`app-alert app-alert-${tone} app-banner`} role="status">
+      <p>{children}</p>
+      {onDismiss ? (
+        <button type="button" className="icon-button" onClick={onDismiss} aria-label={dismissLabel || "Close"}>
+          ×
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function LoadingState({ label }: { label: ReactNode }) {
+  return (
+    <div className="loading loading-state" role="status" aria-live="polite">
+      <span className="loading-spinner" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+export function PhoneField({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
+  return <input type="tel" inputMode="tel" autoComplete="tel" className={`phone-input ${className}`.trim()} {...props} />;
+}
 
 export function Field({
   label,

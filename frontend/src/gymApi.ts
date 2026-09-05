@@ -1,3 +1,5 @@
+import { formatHttpError, notifyIfSessionExpired } from './api'
+
 export type MembershipStatus = 'active' | 'expiring_soon' | 'expired' | 'cancelled' | 'suspended' | 'upcoming'
 export type GymPaymentStatus = 'paid' | 'partial' | 'unpaid'
 export interface Member {
@@ -170,6 +172,46 @@ export interface WhatsAppReminderList {
   missing_phone: number
   items: WhatsAppReminder[]
 }
+
+export interface Member360Class {
+  id: number
+  name: string
+}
+
+export interface Member360Plan {
+  id: number
+  name: string
+  duration_months: number
+  price: string | number
+}
+
+export interface Member360Member extends Member {
+  is_active: boolean
+}
+
+export interface Member360Membership {
+  id: number
+  member_id: number
+  plan_id: number
+  plan: Member360Plan
+  start_date: string
+  end_date: string
+  price: string | number
+  status: MembershipStatus | string
+  payment_status: GymPaymentStatus | string
+  total_paid: string | number
+  remaining_balance: string | number
+  notes?: string
+}
+
+export interface Member360 {
+  member: Member360Member
+  training_class: Member360Class | null
+  memberships: Member360Membership[]
+  payments: GymPayment[]
+  attendance: Attendance[]
+  reminder: WhatsAppReminder | null
+}
 const base = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 function csrfToken() {
   const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/)
@@ -181,19 +223,13 @@ function safeDownloadName(name: string, fallback: string) {
   if (!cleaned || cleaned === '.' || cleaned === '..') return fallback
   return cleaned.slice(0, 180)
 }
-function requestError(status: number, body: { detail?: string; error?: string } = {}) {
+
+function requestError(status: number, body: unknown = {}) {
   return new Error(
-    body.detail ||
-      body.error ||
-      (
-        {
-          401: 'Your session has expired. Please log in again.',
-          403: "You don't have permission to perform this action.",
-          404: 'The requested gym record was not found.',
-          409: 'This operation conflicts with an existing gym record.',
-        } as Record<number, string>
-      )[status] ||
-      'Something went wrong. Please try again.',
+    formatHttpError(status, body, {
+      notFound: 'The requested gym record was not found.',
+      conflict: 'This operation conflicts with an existing gym record.',
+    }),
   )
 }
 
@@ -205,7 +241,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     if (token) headers['X-CSRFToken'] = token
     const response = await fetch(`${base}${path}`, { credentials: 'include', ...options, headers })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw requestError(response.status, body)
+    if (!response.ok) {
+      notifyIfSessionExpired(response.status, body)
+      throw requestError(response.status, body)
+    }
     return body as T
   } catch (error) {
     if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
@@ -221,6 +260,7 @@ async function downloadFile(path: string, fallbackName: string) {
     const response = await fetch(`${base}${path}`, { credentials: 'include', headers })
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
+      notifyIfSessionExpired(response.status, body)
       throw requestError(response.status, body)
     }
     const blob = await response.blob()
@@ -258,6 +298,7 @@ export const gymApi = {
   createExpense: (payload: { category: string; title?: string; amount: number | string; year?: number; month?: number; notes?: string }) => request<GymExpense>('/fitness/expenses', { method: 'POST', body: JSON.stringify(payload) }),
   deleteExpense: (id: number) => request<{ success: boolean }>(`/fitness/expenses/${id}`, { method: 'DELETE' }),
   members: (search = '') => request<Member[]>(`/fitness/members${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+  member360: (id: number) => request<Member360>(`/fitness/members/${id}/360`),
   createMember: (payload: { first_name: string; last_name: string; phone: string; email: string; id_number: string; address?: string; city?: string; country?: string; postal_code?: string }) => request<Member>('/fitness/members', { method: 'POST', body: JSON.stringify(payload) }),
   updateMember: (id: number, payload: { first_name: string; last_name: string; phone: string; email: string; id_number: string; address?: string; city?: string; country?: string; postal_code?: string }) => request<Member>(`/fitness/members/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteMember: (id: number) => request<{ success: boolean }>(`/fitness/members/${id}`, { method: 'DELETE' }),
@@ -308,6 +349,7 @@ export const gymApi = {
       const response = await fetch(`${base}/fitness/payments/${id}/receipt.html`, { credentials: 'include', headers })
       if (!response.ok) {
         const body = await response.json().catch(() => ({}))
+        notifyIfSessionExpired(response.status, body)
         throw requestError(response.status, body)
       }
       const html = await response.text()

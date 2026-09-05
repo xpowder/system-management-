@@ -42,6 +42,8 @@ import {
   type GymPayment,
   type Member,
   type Membership,
+  type Member360,
+  type Member360Membership,
   type MonthlyOverview,
   type GymNotification,
   type Plan,
@@ -50,10 +52,12 @@ import {
   type WhatsAppReminder,
   type WhatsAppReminderList,
 } from "./gymApi";
-import { bookingApi, type AdminUser } from "./api";
+import { bookingApi, type AdminUser, type AuthUser } from "./api";
+import { can, isAdminOnlyNotification, isGymAdmin, isGymDesk } from "./permissions";
 import { clock, date, LanguageSwitch, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
-import { EmptyState, Field, FieldGrid, FormSection } from "./ui";
+import { Alert, EmptyState, Field, FieldGrid, FormSection, LoadingState, PageHeader, PhoneField } from "./ui";
 import { ThemeSwitch } from "./theme";
+import { playNotificationSound, unlockNotificationSound } from "./notificationSound";
 import "./App.css";
 import "./design-system.css";
 
@@ -68,6 +72,55 @@ type OnPayment = (
   membershipId: number,
   payload: PaymentPayload,
 ) => Promise<GymPayment | void> | void;
+
+type MemberUpdatePayload = {
+  first_name: string;
+  last_name: string;
+  phone: string;
+  email: string;
+  id_number: string;
+  address?: string;
+  city?: string;
+  country?: string;
+  postal_code?: string;
+  class_id?: number | null;
+  price?: number | string;
+  remaining?: number | string;
+  plan_id?: number;
+  start_date?: string;
+  membership?: {
+    id: number;
+    plan_id: number;
+    start_date: string;
+    notes?: string;
+  };
+};
+
+type OnMemberUpdate = (id: number, payload: MemberUpdatePayload) => Promise<boolean> | void;
+
+function isValidEmail(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+}
+
+function membershipRemainLabel(
+  endDate: string | undefined,
+  status: string | undefined,
+  t: (key: Msg, vars?: Record<string, string | number>) => string,
+) {
+  if (!endDate) return "";
+  const end = new Date(endDate);
+  const today = new Date();
+  end.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((end.getTime() - today.getTime()) / 86400000);
+  if (status === "expired" || days < 0) return t("members.expiredLabel");
+  if (days === 0) return t("members.endsToday");
+  if (days === 1) return t("members.endsTomorrow");
+  if (days <= 7) return t("members.endsIn", { n: days });
+  return t(days === 1 ? "remind.daysLeft" : "remind.daysLeftPlural", { n: days });
+}
 
 function classTypeLabel(value: string, t: (key: Msg) => string) {
   const keys: Record<string, Msg> = {
@@ -196,6 +249,340 @@ function openRecordPaymentForm({
   overlay.append(panel);
   document.body.append(overlay);
   amountInput.focus();
+}
+
+type MemberFormState = {
+  first_name: string;
+  last_name: string;
+  phone: string;
+  email: string;
+  id_number: string;
+  address: string;
+  city: string;
+  class_id: string;
+  plan_id: string;
+  start_date: string;
+  amount_paid: string;
+  remaining: string;
+  price: string;
+};
+
+function blankMemberForm(): MemberFormState {
+  return {
+    first_name: "",
+    last_name: "",
+    phone: "",
+    email: "",
+    id_number: "",
+    address: "",
+    city: "",
+    class_id: "",
+    plan_id: "",
+    start_date: new Date().toISOString().slice(0, 10),
+    amount_paid: "0",
+    remaining: "",
+    price: "",
+  };
+}
+
+function memberFormValues(member: Member, membership?: Membership, plans: Plan[] = []): MemberFormState {
+  const names = member.name.trim().split(/\s+/);
+  return {
+    first_name: names[0] || "",
+    last_name: names.slice(1).join(" ") || "",
+    phone: member.phone || "",
+    email: member.email || "",
+    id_number: member.id_number || "",
+    address: member.address || "",
+    city: member.city || "",
+    class_id: member.class_id ? String(member.class_id) : "",
+    plan_id: membership?.plan_id ? String(membership.plan_id) : "",
+    start_date: membership?.start_date.slice(0, 10) || new Date().toISOString().slice(0, 10),
+    amount_paid: membership ? String(membership.total_paid) : "0",
+    remaining: membership ? String(membership.remaining_balance) : "",
+    price: membership
+      ? String(membership.price)
+      : selectablePlans(plans)[0]
+        ? String(selectablePlans(plans)[0].price)
+        : "",
+  };
+}
+
+function MemberRecordFields({
+  mode,
+  form,
+  setForm,
+  classes,
+  plans,
+}: {
+  mode: "create" | "edit";
+  form: MemberFormState;
+  setForm: (next: MemberFormState) => void;
+  classes: FitnessClass[];
+  plans: Plan[];
+}) {
+  const { t } = useLang();
+  const patch = (partial: Partial<MemberFormState>) => setForm({ ...form, ...partial });
+  return (
+    <>
+      <FormSection title={t("form.personal")}>
+        <FieldGrid>
+          <Field label={t("common.firstName")}>
+            <input value={form.first_name} onChange={(event) => patch({ first_name: event.target.value })} />
+          </Field>
+          <Field label={t("common.lastName")}>
+            <input value={form.last_name} onChange={(event) => patch({ last_name: event.target.value })} />
+          </Field>
+          <Field label={t("members.cin")} hint={mode === "create" ? t("members.cinHelp") : undefined}>
+            <input
+              value={form.id_number}
+              placeholder={t("members.cinPh")}
+              onChange={(event) => patch({ id_number: event.target.value })}
+            />
+          </Field>
+          <Field label={t("members.city")}>
+            <input
+              value={form.city}
+              placeholder={t("members.cityPh")}
+              onChange={(event) => patch({ city: event.target.value })}
+            />
+          </Field>
+          <Field label={t("members.address")} wide>
+            <input
+              value={form.address}
+              placeholder={t("members.addressPh")}
+              onChange={(event) => patch({ address: event.target.value })}
+            />
+          </Field>
+          <Field label={t("common.phone")}>
+            <PhoneField value={form.phone} onChange={(event) => patch({ phone: event.target.value })} />
+          </Field>
+          <Field label={t("common.email")}>
+            <input
+              type="email"
+              value={form.email}
+              onChange={(event) => patch({ email: event.target.value })}
+            />
+          </Field>
+        </FieldGrid>
+      </FormSection>
+      <FormSection title={t("form.membership")}>
+        <FieldGrid>
+          <Field label={t("members.class")}>
+            <select value={form.class_id} onChange={(event) => patch({ class_id: event.target.value })}>
+              <option value="">{mode === "create" ? t("members.selectClass") : t("members.noClass")}</option>
+              {classes.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label={t("memberships.plan")}>
+            <select value={form.plan_id} onChange={(event) => patch({ plan_id: event.target.value })}>
+              <option value="">{t("members.selectPlan")}</option>
+              {selectablePlans(plans, form.plan_id).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label={t("members.startDate")}>
+            <input
+              type="date"
+              value={form.start_date}
+              onChange={(event) => patch({ start_date: event.target.value })}
+            />
+          </Field>
+        </FieldGrid>
+      </FormSection>
+      <FormSection title={t("form.payment")}>
+        {mode === "create" ? <p className="form-caption">{t("members.paymentHelp")}</p> : null}
+        <FieldGrid>
+          {mode === "create" ? (
+            <Field label={t("members.amountPaid")}>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="100"
+                value={form.amount_paid}
+                onChange={(event) => patch({ amount_paid: event.target.value })}
+              />
+            </Field>
+          ) : (
+            <Field label={t("members.priceMad")}>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={form.price}
+                onChange={(event) => patch({ price: event.target.value })}
+              />
+            </Field>
+          )}
+          <Field label={t("pay.owes")}>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="20"
+              value={form.remaining}
+              onChange={(event) => patch({ remaining: event.target.value })}
+            />
+          </Field>
+        </FieldGrid>
+      </FormSection>
+    </>
+  );
+}
+
+function EditMemberOverlay({
+  member,
+  classes,
+  plans,
+  currentMembership,
+  onUpdate,
+  onClose,
+}: {
+  member: Member;
+  classes: FitnessClass[];
+  plans: Plan[];
+  currentMembership?: Membership;
+  onUpdate: OnMemberUpdate;
+  onClose: () => void;
+}) {
+  const { t } = useLang();
+  const [form, setForm] = useState(() => memberFormValues(member, currentMembership, plans));
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  useEffect(() => {
+    void gymApi.memberClass(member.id).then((memberClass) => {
+      if (memberClass.training_class_id) {
+        setForm((current) => ({ ...current, class_id: String(memberClass.training_class_id) }));
+      }
+    }).catch(() => undefined);
+  }, [member.id]);
+
+  const save = async () => {
+    if (saving) return;
+    if (!form.first_name.trim() || !form.last_name.trim()) {
+      setFormError(t("admin.nameReq"));
+      return;
+    }
+    if (form.email.trim() && !isValidEmail(form.email)) {
+      setFormError(t("form.validEmail"));
+      return;
+    }
+    const priceValue = form.price.trim();
+    const remainingValue = form.remaining.trim();
+    const originalRemaining = currentMembership ? Number(currentMembership.remaining_balance) : undefined;
+    const remainingNumber = remainingValue === "" ? undefined : Number(remainingValue);
+    const remainingChanged = remainingNumber !== undefined && remainingNumber !== originalRemaining;
+    const planId = form.plan_id ? Number(form.plan_id) : currentMembership?.plan_id || (plans[0] ? plans[0].id : undefined);
+    const startDate = form.start_date || currentMembership?.start_date.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    setFormError("");
+    setSaving(true);
+    try {
+      const ok = await onUpdate(member.id, {
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim(),
+        phone: form.phone.trim(),
+        email: form.email.trim(),
+        id_number: form.id_number.trim(),
+        address: form.address.trim(),
+        city: form.city.trim(),
+        country: member.country || "Morocco",
+        class_id: form.class_id ? Number(form.class_id) : null,
+        price: priceValue === "" ? undefined : Number(priceValue),
+        remaining: remainingChanged ? remainingNumber : undefined,
+        plan_id: planId,
+        start_date: startDate,
+        membership: currentMembership
+          ? {
+              id: currentMembership.id,
+              plan_id: planId || currentMembership.plan_id,
+              start_date: startDate,
+              notes: currentMembership.notes || "",
+            }
+          : undefined,
+      });
+      if (ok === false) return;
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="member-details-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="member-details-panel form-panel member-form is-wide">
+        <span className="eyebrow">{t("members.editHead")}</span>
+        <MemberRecordFields mode="edit" form={form} setForm={setForm} classes={classes} plans={plans} />
+        {formError ? <Alert>{formError}</Alert> : null}
+        <div className="form-actions">
+          <button type="button" className="secondary" onClick={onClose} disabled={saving}>
+            {t("common.cancel")}
+          </button>
+          <button type="button" className="primary" onClick={() => void save()} disabled={saving}>
+            {saving ? t("common.saving") : t("common.save")}
+          </button>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function membershipFrom360(item: Member360Membership): Membership {
+  return {
+    id: item.id,
+    member_id: item.member_id,
+    plan_id: item.plan_id,
+    start_date: item.start_date,
+    end_date: item.end_date,
+    price: item.price,
+    status: item.status as Membership["status"],
+    payment_status: item.payment_status as Membership["payment_status"],
+    total_paid: item.total_paid,
+    remaining_balance: item.remaining_balance,
+    notes: item.notes,
+  };
+}
+
+function isCurrentMembershipStatus(status: string) {
+  return status === "active" || status === "expiring_soon";
+}
+
+function isNotFoundError(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  return /not found/i.test(message);
+}
+
+function memberLocation(member: { address?: string; city?: string; postal_code?: string; country?: string }) {
+  return [member.address, member.city, member.postal_code, member.country].map((part) => part?.trim()).filter(Boolean).join(", ");
+}
+
+function visitDurationLabel(
+  checkedInAt: string,
+  checkedOutAt: string | null | undefined,
+  t: (key: Msg, vars?: Record<string, string | number>) => string,
+) {
+  if (!checkedOutAt) return "";
+  const minutes = Math.round((new Date(checkedOutAt).getTime() - new Date(checkedInAt).getTime()) / 60000);
+  if (!Number.isFinite(minutes) || minutes < 0) return "";
+  if (minutes < 60) return t("m360.durationMins", { n: minutes });
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? t("m360.durationHoursMins", { h: hours, n: rest }) : t("m360.durationHours", { n: hours });
 }
 
 const PAGE_SIZE = 40;
@@ -337,6 +724,7 @@ function Stat({
 type Page =
   | "dashboard"
   | "members"
+  | "member360"
   | "classes"
   | "memberships"
   | "plans"
@@ -359,20 +747,54 @@ function isCompactViewport() {
   return getViewport().width <= 620
 }
 
+function notificationText(item: GymNotification) {
+  return `${item.title} ${item.message || ""}`.toLowerCase()
+}
+
+function notificationMembershipStatus(item: GymNotification) {
+  const hay = notificationText(item)
+  if (
+    item.title === "Membership expiring soon" ||
+    hay.includes("expiring soon") ||
+    hay.includes("expire bientôt") ||
+    hay.includes("expire bientot")
+  ) {
+    return "expiring_soon"
+  }
+  if (
+    item.title === "Membership expired" ||
+    hay.includes("membership expired") ||
+    hay.includes("abonnement expiré") ||
+    hay.includes("abonnement expire")
+  ) {
+    return "expired"
+  }
+  return undefined
+}
+
 function notificationDestination(item: GymNotification): { page: Page; status?: string } {
-  if (item.title === "Membership expiring soon") return { page: "memberships", status: "expiring_soon" }
-  if (item.title === "Membership expired") return { page: "memberships", status: "expired" }
-  if (item.category === "members" || item.title === "New member registered") return { page: "members" }
+  const membershipStatus = notificationMembershipStatus(item)
+  if (membershipStatus) return { page: "memberships", status: membershipStatus }
+  if (
+    item.category === "members" ||
+    item.title === "New member registered" ||
+    /new member|nouvel adh[eé]rent|nouveau membre/.test(notificationText(item))
+  ) return { page: "members" }
   if (item.category === "payments") return { page: "payments" }
   if (item.category === "memberships") return { page: "memberships" }
   return { page: "notifications" }
 }
 
 function notificationOpenKey(item: GymNotification): Msg {
-  if (item.title === "Membership expiring soon") return "notif.openExpiring"
-  if (item.title === "Membership expired") return "notif.openExpired"
+  const membershipStatus = notificationMembershipStatus(item)
+  if (membershipStatus === "expiring_soon") return "notif.openExpiring"
+  if (membershipStatus === "expired") return "notif.openExpired"
   if (item.category === "payments") return "notif.openPayments"
-  if (item.category === "members" || item.title === "New member registered") return "notif.openMembers"
+  if (
+    item.category === "members" ||
+    item.title === "New member registered" ||
+    /new member|nouvel adh[eé]rent|nouveau membre/.test(notificationText(item))
+  ) return "notif.openMembers"
   if (item.category === "memberships") return "notif.openMemberships"
   return "notif.tapToOpen"
 }
@@ -380,26 +802,19 @@ function notificationOpenKey(item: GymNotification): Msg {
 export default function GymApp({
   currentUser,
   onLogout,
+  onUserUpdated,
 }: {
-  currentUser: {
-    id: number;
-    username: string;
-    first_name: string;
-    last_name: string;
-    email: string;
-    is_staff: boolean;
-    role?: string | null;
-    phone?: string;
-    date_joined?: string;
-    last_login?: string | null;
-  };
+  currentUser: AuthUser;
   onLogout: () => void;
+  onUserUpdated?: (user: AuthUser) => void;
 }) {
   const { t, lang } = useLang();
   loggedInStaffName = staffDisplayName(currentUser);
   const [today, setToday] = useState(todayLabel)
   const [todayShort, setTodayShort] = useState(() => todayLabel(true))
   const [notifications, setNotifications] = useState<GymNotification[]>([])
+  const [notificationsError, setNotificationsError] = useState("")
+  const [notificationsBusy, setNotificationsBusy] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [notificationMenuStyle, setNotificationMenuStyle] = useState<CSSProperties>({})
   const [notificationCompact, setNotificationCompact] = useState(false)
@@ -408,9 +823,9 @@ export default function GymApp({
   const knownNotificationIds = useRef<Set<number>>(new Set())
   const skipNotificationToast = useRef(true)
   const role = (currentUser.role || "").toLowerCase();
-  const canAdminister = role
-    ? ["admin", "super admin"].includes(role)
-    : currentUser.is_staff;
+  const canAdminister = isGymAdmin(currentUser);
+  const canUseDesk = isGymDesk(currentUser);
+  const [member360Id, setMember360Id] = useState<number | null>(null);
   const logout = async () => {
     try {
       await bookingApi.logout();
@@ -419,14 +834,15 @@ export default function GymApp({
     }
   };
   const [page, setPage] = useState<Page>(() =>
-    window.location.pathname === "/admin" && canAdminister
+    window.location.pathname === "/admin" && can(currentUser, "admin.users")
       ? "admin"
       : "dashboard",
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   useEffect(() => {
     if (!canAdminister && (page === "admin" || page === "trainers" || page === "expenses")) setPage("dashboard");
-  }, [canAdminister, page]);
+    if (page === "member360" && !member360Id) setPage("members");
+  }, [canAdminister, page, member360Id]);
   useEffect(() => {
     setToday(todayLabel());
     setTodayShort(todayLabel(true));
@@ -436,29 +852,47 @@ export default function GymApp({
     }, 60_000)
     return () => window.clearInterval(timer)
   }, [lang]);
-  const refreshNotifications = async () => {
+  const notificationLoadSeq = useRef(0)
+  const refreshNotifications = async (options?: { silent?: boolean }) => {
+    if (!canUseDesk) return
+    const requestId = ++notificationLoadSeq.current
     try {
       const items = await gymApi.notifications('', false)
-      if (!skipNotificationToast.current) {
-        const incoming = items.filter(item => !knownNotificationIds.current.has(item.id) && !item.is_read)
+      if (requestId !== notificationLoadSeq.current) return
+      if (!skipNotificationToast.current && !options?.silent) {
+        const incoming = items.filter(item =>
+          !knownNotificationIds.current.has(item.id) &&
+          !item.is_read &&
+          (canAdminister || !isAdminOnlyNotification(item))
+        )
         if (incoming[0]) {
+          if (canAdminister && incoming.some((item) => !isAdminOnlyNotification(item))) {
+            playNotificationSound()
+          }
           setNotice(`${incoming[0].title}: ${incoming[0].message}`)
         }
       }
       skipNotificationToast.current = false
       knownNotificationIds.current = new Set(items.map(item => item.id))
       setNotifications(items)
-    } catch {
-      return
+      setNotificationsError("")
+    } catch (e) {
+      if (requestId !== notificationLoadSeq.current) return
+      setNotificationsError(e instanceof Error ? e.message : t("notif.loadFail"))
     }
   }
   useEffect(() => {
-    void refreshNotifications()
+    const unlock = () => unlockNotificationSound()
+    document.addEventListener("pointerdown", unlock, { once: true })
+    if (canUseDesk) void refreshNotifications()
     const timer = window.setInterval(() => {
-      if (document.hidden) return
+      if (document.hidden || !canUseDesk) return
       void refreshNotifications()
     }, 30_000)
-    return () => window.clearInterval(timer)
+    return () => {
+      document.removeEventListener("pointerdown", unlock)
+      window.clearInterval(timer)
+    }
   }, [])
   const placeNotificationMenu = () => {
     const anchor = notificationBellRef.current
@@ -532,41 +966,77 @@ export default function GymApp({
       document.removeEventListener("keydown", onKey)
     }
   }, [notificationsOpen])
-  const unreadCount = notifications.filter(item => !item.is_read).length
+  const visibleNotifications = useMemo(
+    () => (canAdminister ? notifications : notifications.filter((item) => !isAdminOnlyNotification(item))),
+    [canAdminister, notifications],
+  );
+  const unreadCount = visibleNotifications.filter(item => !item.is_read).length
   const markNotificationRead = async (id: number) => {
     try {
       const updated = await gymApi.markNotificationRead(id)
       setNotifications(current => current.map(item => item.id === id ? updated : item))
-    } catch {
-      return
+    } catch (e) {
+      setNotificationsError(e instanceof Error ? e.message : t("notif.readFail"))
     }
   }
   const deleteNotification = async (id: number) => {
+    if (notificationsBusy) return false
+    setNotificationsBusy(true)
     try {
       await gymApi.deleteNotification(id)
       setNotifications(current => current.filter(item => item.id !== id))
       knownNotificationIds.current.delete(id)
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : t("notif.deleteFail"))
+      return false
+    } finally {
+      setNotificationsBusy(false)
     }
   }
   const deleteAllNotifications = async () => {
-    if (!notifications.length) return
-    if (!window.confirm(t("notif.deleteAllConfirm"))) return
+    const targets = visibleNotifications
+    if (!targets.length || notificationsBusy) return false
+    if (!window.confirm(t("notif.deleteAllConfirm"))) return false
+    setNotificationsBusy(true)
     try {
-      await gymApi.deleteAllNotifications()
-      setNotifications([])
-      knownNotificationIds.current = new Set()
+      if (canAdminister) {
+        await gymApi.deleteAllNotifications()
+        setNotifications([])
+        knownNotificationIds.current = new Set()
+      } else {
+        await Promise.all(targets.map((item) => gymApi.deleteNotification(item.id)))
+        const gone = new Set(targets.map((item) => item.id))
+        setNotifications((current) => current.filter((item) => !gone.has(item.id)))
+        gone.forEach((id) => knownNotificationIds.current.delete(id))
+      }
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : t("notif.deleteAllFail"))
+      return false
+    } finally {
+      setNotificationsBusy(false)
     }
   }
   const markAllNotificationsRead = async () => {
+    const targets = visibleNotifications.filter((item) => !item.is_read)
+    if (!targets.length || notificationsBusy) return false
+    setNotificationsBusy(true)
     try {
-      await gymApi.markAllNotificationsRead()
-      setNotifications(current => current.map(item => ({ ...item, is_read: true })))
+      if (canAdminister) {
+        await gymApi.markAllNotificationsRead()
+        setNotifications((current) => current.map((item) => ({ ...item, is_read: true })))
+      } else {
+        const updated = await Promise.all(targets.map((item) => gymApi.markNotificationRead(item.id)))
+        const byId = new Map(updated.map((item) => [item.id, item]))
+        setNotifications((current) => current.map((item) => byId.get(item.id) || item))
+      }
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : t("notif.readFail"))
+      return false
+    } finally {
+      setNotificationsBusy(false)
     }
   }
   const [dashboard, setDashboard] = useState<GymDashboard | null>(null);
@@ -583,8 +1053,14 @@ export default function GymApp({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  const loadSeq = useRef(0);
   const load = async (options?: { quiet?: boolean }) => {
     const quiet = options?.quiet ?? false;
+    if (!canUseDesk) {
+      if (!quiet) setBusy(false);
+      return;
+    }
+    const requestId = ++loadSeq.current;
     if (!quiet) {
       setBusy(true);
       setError("");
@@ -609,6 +1085,7 @@ export default function GymApp({
         gymApi.attendance(),
         canAdminister ? gymApi.trainers() : Promise.resolve([]),
       ]);
+      if (requestId !== loadSeq.current) return;
       setDashboard(stats);
       setMembers(people);
       setClasses(classList);
@@ -617,9 +1094,10 @@ export default function GymApp({
       setPayments(paymentList);
       setAttendance(attendanceList);
       setTrainers(trainerList);
-      if (quiet) void refreshNotifications();
+      if (quiet) void refreshNotifications({ silent: true });
       else await refreshNotifications();
     } catch (e) {
+      if (requestId !== loadSeq.current) return;
       setError(e instanceof Error ? e.message : t("loadFail"));
     } finally {
       if (!quiet) setBusy(false);
@@ -630,16 +1108,39 @@ export default function GymApp({
     setNotice(message);
     void load({ quiet: true });
   };
+  const savingRef = useRef(false);
+  const mutate = async (action: () => Promise<void>, failMessage: string): Promise<boolean> => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    try {
+      await action();
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : failMessage);
+      return false;
+    } finally {
+      savingRef.current = false;
+    }
+  };
 
   useEffect(() => {
     void load();
   }, []);
 
   const go = (next: Page, options?: { status?: string }) => {
+    if (!canUseDesk) return;
+    if (!canAdminister && (next === "admin" || next === "trainers" || next === "expenses")) return;
+    if (next !== "member360") setMember360Id(null);
     setPage(next);
     setMobileMenuOpen(false);
     setQuery("");
     setStatus(options?.status ?? "");
+  };
+  const openMember360 = (id: number) => {
+    if (!canUseDesk) return;
+    setMember360Id(id);
+    setPage("member360");
+    setMobileMenuOpen(false);
   };
 
   const openNotification = (item: GymNotification) => {
@@ -659,7 +1160,7 @@ export default function GymApp({
     for (const plan of plans) map.set(plan.id, plan);
     return map;
   }, [plans]);
-  const memberName = (id: number) => memberById.get(id)?.name || `Member #${id}`;
+  const memberName = (id: number) => memberById.get(id)?.name || t("members.unknown");
   const planName = (id: number) => planById.get(id)?.name || `Plan #${id}`;
   const filteredMembers = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -675,28 +1176,24 @@ export default function GymApp({
     return memberships.filter((item) => {
       if (status && item.status !== status) return false;
       if (!needle) return true;
-      const name = memberById.get(item.member_id)?.name || `Member #${item.member_id}`;
+      const name = memberName(item.member_id);
       const plan = planById.get(item.plan_id)?.name || `Plan #${item.plan_id}`;
       return `${name} ${plan}`.toLowerCase().includes(needle);
     });
-  }, [memberships, status, query, memberById, planById]);
+  }, [memberships, status, query, memberById, planById, memberName]);
 
   const checkIn = async (id: number) => {
-    try {
+    return mutate(async () => {
       await gymApi.checkIn(id);
       afterSave(t("att.ok"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("att.fail"));
-    }
+    }, t("att.fail"));
   };
 
   const checkOut = async (id: number) => {
-    try {
+    return mutate(async () => {
       await gymApi.checkOut(id);
       afterSave(t("att.outOk"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("att.outFail"));
-    }
+    }, t("att.outFail"));
   };
 
   const createMember = async (payload: {
@@ -715,7 +1212,7 @@ export default function GymApp({
     amount_paid?: number | string;
     remaining?: number | string;
   }) => {
-    try {
+    const ok = await mutate(async () => {
       const created = await gymApi.createMember({
         first_name: payload.first_name,
         last_name: payload.last_name,
@@ -727,6 +1224,13 @@ export default function GymApp({
         country: payload.country,
         postal_code: payload.postal_code,
       });
+      const createdMember: Member = {
+        ...created,
+        name: (created.name || "").trim() || `${payload.first_name} ${payload.last_name}`.trim(),
+      };
+      setMembers((current) =>
+        current.some((item) => item.id === createdMember.id) ? current : [createdMember, ...current],
+      );
 
       await Promise.all([
         payload.class_id
@@ -765,9 +1269,9 @@ export default function GymApp({
       ]);
 
       afterSave(t("member.created"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("member.createFail"));
-    }
+    }, t("member.createFail"));
+    if (!ok) void load({ quiet: true });
+    return ok;
   };
 
   const updateMember = async (
@@ -795,7 +1299,7 @@ export default function GymApp({
       };
     },
   ) => {
-    try {
+    return mutate(async () => {
       await gymApi.updateMember(memberId, {
         first_name: payload.first_name,
         last_name: payload.last_name,
@@ -817,7 +1321,8 @@ export default function GymApp({
         setMemberships((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
-      } else if (payload.membership && Number.isFinite(nextPrice) && nextPrice >= 0) {
+      }
+      if (payload.membership && Number.isFinite(nextPrice) && nextPrice >= 0) {
         const updated = await gymApi.updateMembershipPrice(payload.membership.id, nextPrice);
         setMemberships((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
@@ -840,19 +1345,15 @@ export default function GymApp({
         await gymApi.setMemberClass(memberId, payload.class_id);
       }
       afterSave(t("member.updated"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("member.updateFail"));
-    }
+    }, t("member.updateFail"));
   };
 
   const deleteMember = async (memberId: number) => {
-    if (!window.confirm(t("member.deleteConfirm"))) return;
-    try {
+    if (!window.confirm(t("member.deleteConfirm"))) return false;
+    return mutate(async () => {
       await gymApi.deleteMember(memberId);
       afterSave(t("member.deleted"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("member.deleteFail"));
-    }
+    }, t("member.deleteFail"));
   };
 
   const createClass = async (payload: {
@@ -861,12 +1362,10 @@ export default function GymApp({
     price_per_member: number | string;
     is_active?: boolean;
   }) => {
-    try {
+    return mutate(async () => {
       await gymApi.createClass(payload);
       afterSave(t("class.ok"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("class.fail"));
-    }
+    }, t("class.fail"));
   };
 
   const updateClass = async (
@@ -878,21 +1377,17 @@ export default function GymApp({
       is_active?: boolean;
     },
   ) => {
-    try {
+    return mutate(async () => {
       await gymApi.updateClass(id, payload);
       afterSave(t("class.updated"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("class.updateFail"));
-    }
+    }, t("class.updateFail"));
   };
 
   const deleteClass = async (id: number) => {
-    try {
+    return mutate(async () => {
       await gymApi.deleteClass(id);
       afterSave(t("class.deleted"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("class.deleteFail"));
-    }
+    }, t("class.deleteFail"));
   };
 
   const createPlan = async (payload: {
@@ -902,12 +1397,10 @@ export default function GymApp({
     description?: string;
     is_active?: boolean;
   }) => {
-    try {
+    return mutate(async () => {
       await gymApi.createPlan(payload);
       afterSave(t("plans.ok"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("plans.fail"));
-    }
+    }, t("plans.fail"));
   };
 
   const updatePlan = async (
@@ -920,21 +1413,17 @@ export default function GymApp({
       is_active?: boolean;
     },
   ) => {
-    try {
+    return mutate(async () => {
       await gymApi.updatePlan(id, payload);
       afterSave(t("plans.updated"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("plans.updateFail"));
-    }
+    }, t("plans.updateFail"));
   };
 
   const deletePlan = async (id: number) => {
-    try {
+    return mutate(async () => {
       await gymApi.deletePlan(id);
       afterSave(t("plans.deleted"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("plans.deleteFail"));
-    }
+    }, t("plans.deleteFail"));
   };
 
   const createTrainer = async (payload: {
@@ -946,12 +1435,10 @@ export default function GymApp({
     pay_amount?: number | string;
     is_paid?: boolean;
   }) => {
-    try {
+    return mutate(async () => {
       await gymApi.createTrainer(payload);
       afterSave(t("train.ok"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("train.fail"));
-    }
+    }, t("train.fail"));
   };
 
   const updateTrainerPayroll = async (
@@ -963,21 +1450,17 @@ export default function GymApp({
       is_paid?: boolean;
     },
   ) => {
-    try {
+    return mutate(async () => {
       await gymApi.updateTrainerPayroll(id, payload);
       afterSave(payload.is_paid ? t("train.paidOk") : t("train.saved"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("train.updateFail"));
-    }
+    }, t("train.updateFail"));
   };
 
   const deleteTrainer = async (id: number) => {
-    try {
+    return mutate(async () => {
       await gymApi.deleteTrainer(id);
       afterSave(t("train.deleted"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("train.deleteFail"));
-    }
+    }, t("train.deleteFail"));
   };
 
   const renewMembership = async (
@@ -989,12 +1472,10 @@ export default function GymApp({
       notes: string;
     },
   ) => {
-    try {
+    return mutate(async () => {
       await gymApi.renew(membershipId, payload);
       afterSave(t("membership.renewed"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("membership.renewFail"));
-    }
+    }, t("membership.renewFail"));
   };
 
   const updateMembership = async (
@@ -1006,41 +1487,44 @@ export default function GymApp({
       notes: string;
     },
   ) => {
-    try {
+    return mutate(async () => {
       await gymApi.updateMembership(membershipId, payload);
       afterSave(t("membership.updated"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("membership.updateFail"));
-    }
+    }, t("membership.updateFail"));
   };
 
   const deleteMembership = async (membershipId: number) => {
-    if (!window.confirm(t("membership.deleteConfirm"))) return;
-    try {
+    if (!window.confirm(t("membership.deleteConfirm"))) return false;
+    return mutate(async () => {
       await gymApi.deleteMembership(membershipId);
       afterSave(t("membership.deleted"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("membership.deleteFail"));
-    }
+    }, t("membership.deleteFail"));
   };
 
   const setMembershipPaymentStatus = async (membership: Membership, status: "paid" | "unpaid") => {
-    try {
+    return mutate(async () => {
       const updated = await gymApi.updatePaymentStatus(membership.id, status)
       setMemberships((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       afterSave(t("pay.marked", { status: statusLabel(status) }))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("pay.fail"));
-    }
+    }, t("pay.fail"));
   };
 
   const recordPayment = async (
     membershipId: number,
     payload: PaymentPayload,
   ) => {
-    const payment = await gymApi.payment(membershipId, payload);
-    afterSave(t("pay.ok"));
-    return payment;
+    if (savingRef.current) throw new Error(t("pay.fail"));
+    savingRef.current = true;
+    try {
+      const payment = await gymApi.payment(membershipId, payload);
+      afterSave(t("pay.ok"));
+      return payment;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("pay.fail"));
+      throw e;
+    } finally {
+      savingRef.current = false;
+    }
   };
 
   const navGroups: Array<{ label: Msg; items: Array<[Page, LucideIcon]> }> = [
@@ -1107,28 +1591,28 @@ export default function GymApp({
           </div>
         </div>
         <nav className="sidebar-nav">
-          {navGroups.map((group) => (
-            <div className="nav-group" key={group.label}>
-              {group.label !== "nav.group.front" && (
-                <p className="nav-group-label">{t(group.label)}</p>
-              )}
-              {group.items.map(([key, Icon]) => (
-                <button
-                  key={key}
-                  className={page === key ? "active" : ""}
-                  onClick={() => go(key)}
-                >
-                  <Icon size={17} strokeWidth={1.9} /> {t(`nav.${key}` as Msg)}
-                </button>
-              ))}
-            </div>
-          ))}
+          {canUseDesk
+            ? navGroups.map((group) => (
+                <div className="nav-group" key={group.label}>
+                  <p className="nav-group-label">{t(group.label)}</p>
+                  {group.items.map(([key, Icon]) => (
+                    <button
+                      key={key}
+                      className={page === key || (key === "members" && page === "member360") ? "active" : ""}
+                      onClick={() => go(key)}
+                    >
+                      <Icon size={17} strokeWidth={1.9} /> {t(`nav.${key}` as Msg)}
+                    </button>
+                  ))}
+                </div>
+              ))
+            : null}
         </nav>
         <div className="sidebar-bottom">
           <div className="user-chip">
-            <span className="user-chip-avatar">{(currentUser.first_name || currentUser.username).slice(0, 1).toUpperCase()}</span>
+            <span className="user-chip-avatar" aria-hidden="true">{staffDisplayName(currentUser).slice(0, 1).toUpperCase()}</span>
             <div className="user-chip-meta">
-              <strong>{currentUser.first_name || currentUser.username}</strong>
+              <strong>{staffDisplayName(currentUser)}</strong>
               <small>{roleLabel}</small>
             </div>
           </div>
@@ -1152,8 +1636,10 @@ export default function GymApp({
           <div className="top-actions">
             <ThemeSwitch />
             <LanguageSwitch />
+            {canUseDesk && (
+            <>
             <div className="notification-bell-wrap" ref={notificationBellRef}>
-              <button className="icon-button notification-bell" title={t("nav.notifications")} aria-expanded={notificationsOpen} onClick={() => { if (!notificationsOpen) { placeNotificationMenu(); void refreshNotifications() } setNotificationsOpen(!notificationsOpen) }}>
+              <button className="icon-button notification-bell" title={t("nav.notifications")} aria-label={t("nav.notifications")} aria-expanded={notificationsOpen} onClick={() => { if (!notificationsOpen) { placeNotificationMenu(); void refreshNotifications({ silent: true }) } setNotificationsOpen(!notificationsOpen) }}>
                 <Bell size={17} />
                 {unreadCount > 0 && <span className="notification-count">{unreadCount > 9 ? "9+" : unreadCount}</span>}
               </button>
@@ -1168,7 +1654,7 @@ export default function GymApp({
                     </div>
                     <section className="notification-sheet-section notification-sheet-list">
                       <p className="notification-sheet-label">{t("notif.needToSee")}</p>
-                      {notifications.slice(0, 8).map(item => (
+                      {visibleNotifications.slice(0, 8).map(item => (
                         <article className={`notification-dropdown-item ${item.is_read ? "read" : "unread"}`} key={item.id} onClick={() => openNotification(item)}>
                           <span className="notification-dot"></span>
                           <div>
@@ -1182,7 +1668,7 @@ export default function GymApp({
                           </button>
                         </article>
                       ))}
-                      {!notifications.length && <EmptyState title={t("notif.empty")} hint={t("notif.emptyHint")} />}
+                      {!visibleNotifications.length && <EmptyState title={t("notif.empty")} hint={t("notif.emptyHint")} />}
                     </section>
                     <section className="notification-sheet-section notification-sheet-click">
                       <p className="notification-sheet-label">{t("notif.canClick")}</p>
@@ -1195,7 +1681,7 @@ export default function GymApp({
                                   <Check size={16} />
                                 </button>
                               )}
-                              {notifications.length > 0 && (
+                              {visibleNotifications.length > 0 && (
                                 <button type="button" className="icon-button" aria-label={t("notif.clear")} onClick={() => void deleteAllNotifications()}>
                                   <Trash2 size={16} />
                                 </button>
@@ -1220,7 +1706,7 @@ export default function GymApp({
                                 <Check size={16} /> {t("notif.markRead")}
                               </button>
                             )}
-                            {notifications.length > 0 && (
+                            {visibleNotifications.length > 0 && (
                               <button type="button" className="notification-action" onClick={() => void deleteAllNotifications()}>
                                 <Trash2 size={16} /> {t("notif.clear")}
                               </button>
@@ -1247,13 +1733,11 @@ export default function GymApp({
             <button className="primary" onClick={() => go("members")}>
               <UserPlus size={17} /> {t("addMember")}
             </button>
+            </>
+            )}
           </div>
         </header>
-        {busy && (
-          <div className="loading">
-            <RefreshCw size={16} /> {t("common.loading")}
-          </div>
-        )}
+        {busy && <LoadingState label={t("common.loading")} />}
         {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
         {error && (
           <div className="error app-banner">
@@ -1263,7 +1747,13 @@ export default function GymApp({
             </button>
           </div>
         )}
-        <div className={`page-stage${page === "dashboard" ? " overview-enter" : ""}`} key={page}>
+        <div className={`page-stage${page === "dashboard" ? " overview-enter" : ""}`} key={canUseDesk ? page : "denied"}>
+        {!canUseDesk ? (
+          <div className="content">
+            <EmptyState title={t("perm.denied")} hint={t("perm.deniedHint")} />
+          </div>
+        ) : (
+        <>
         {page === "dashboard" && (
           <Dashboard
             data={dashboard}
@@ -1283,8 +1773,25 @@ export default function GymApp({
             onCheckIn={checkIn}
             onCreate={createMember}
             onUpdate={updateMember}
+            onPayment={recordPayment}
+            onOpenProfile={openMember360}
+          />
+        )}
+        {page === "member360" && member360Id && (
+          <Member360Page
+            memberId={member360Id}
+            classes={classes}
+            plans={plans}
+            onBack={() => {
+              setMember360Id(null);
+              setPage("members");
+              setMobileMenuOpen(false);
+            }}
+            onUpdate={updateMember}
             onDelete={deleteMember}
             onPayment={recordPayment}
+            onCheckIn={checkIn}
+            onCheckOut={checkOut}
           />
         )}
         {page === "classes" && (
@@ -1352,15 +1859,33 @@ export default function GymApp({
         )}
         {page === "reports" && <Reports canAdminister={canAdminister} />}
         {page === "expenses" && canAdminister && <ExpensesPage />}
-        {page === "admin" && <Administration />}
+        {page === "admin" && canAdminister && (
+          <Administration
+            currentUser={currentUser}
+            dashboard={dashboard}
+            members={members}
+            memberships={memberships}
+            trainers={trainers}
+            classes={classes}
+            payments={payments}
+            attendance={attendance}
+            notifications={notifications}
+            go={go}
+            onUserUpdated={onUserUpdated}
+          />
+        )}
         {page === "notifications" && (
           <Notifications
-            notifications={notifications}
+            notifications={visibleNotifications}
+            error={notificationsError}
+            busy={notificationsBusy}
             onOpen={openNotification}
             onDelete={id => void deleteNotification(id)}
             onMarkAllRead={() => void markAllNotificationsRead()}
             onDeleteAll={() => void deleteAllNotifications()}
           />
+        )}
+        </>
         )}
         </div>
       </main>
@@ -1370,12 +1895,16 @@ export default function GymApp({
 
 function Notifications({
   notifications,
+  error,
+  busy,
   onOpen,
   onDelete,
   onMarkAllRead,
   onDeleteAll,
 }: {
   notifications: GymNotification[]
+  error?: string
+  busy?: boolean
   onOpen: (item: GymNotification) => void
   onDelete: (id: number) => void
   onMarkAllRead: () => void
@@ -1383,37 +1912,41 @@ function Notifications({
 }) {
   const { t } = useLang()
   const [filter, setFilter] = useState('all')
+  const unreadCount = notifications.filter(item => !item.is_read).length
   const visibleNotifications = notifications.filter(item => filter === 'all' || (filter === 'unread' && !item.is_read) || item.category === filter)
 
   return (
     <div className="content notifications-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <div className="page-head-title">
-            <h2>{t("notif.title")}</h2>
-            <div className="page-head-actions">
-              <button
-                type="button"
-                className="secondary"
-                onClick={onMarkAllRead}
-                aria-label={t("notif.markAll")}
-              >
-                <Check size={16} />
-                <span>{t("notif.markAll")}</span>
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={onDeleteAll}
-                aria-label={t("notif.deleteAll")}
-              >
-                <Trash2 size={16} />
-                <span>{t("notif.deleteAll")}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={t("notif.eyebrow")}
+        title={t("notif.title")}
+        description={t("notif.intro")}
+        actions={
+          <>
+            <button
+              type="button"
+              className="secondary"
+              onClick={onMarkAllRead}
+              disabled={busy || unreadCount === 0}
+              aria-label={t("notif.markAll")}
+            >
+              <Check size={16} />
+              <span>{busy ? t("notif.working") : t("notif.markAll")}</span>
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={onDeleteAll}
+              disabled={busy || notifications.length === 0}
+              aria-label={t("notif.deleteAll")}
+            >
+              <Trash2 size={16} />
+              <span>{t("notif.deleteAll")}</span>
+            </button>
+          </>
+        }
+      />
+      {error && <Alert>{error}</Alert>}
       <div className="notification-filters">
         {['all', 'unread', 'memberships', 'payments', 'members', 'system'].map(value => (
           <button
@@ -1435,7 +1968,7 @@ function Notifications({
               <p>{item.message}</p>
               <small>{date(item.created_at)}</small>
             </div>
-            <button type="button" className="icon-button notification-delete" title={t("notif.deleteTitle")} aria-label={t("notif.deleteTitle")} onClick={event => { event.stopPropagation(); onDelete(item.id) }}>
+            <button type="button" className="icon-button notification-delete" title={t("notif.deleteTitle")} aria-label={t("notif.deleteTitle")} disabled={busy} onClick={event => { event.stopPropagation(); onDelete(item.id) }}>
               <Trash2 size={15} />
             </button>
           </article>
@@ -1585,7 +2118,7 @@ function Dashboard({
               <h2>{t("dash.classes")}</h2>
             </div>
           </div>
-          <div className="empty">{t("dash.noClasses")}</div>
+          <EmptyState title={t("dash.noClasses")} />
         </section>
       )}
       <section className="panel latest">
@@ -1613,7 +2146,7 @@ function Dashboard({
             </button>
           ))}
         </div>
-        {!members.length && !data?.recent_members?.length && <div className="empty">{t("dash.noMembers")}</div>}
+        {!members.length && !data?.recent_members?.length && <EmptyState title={t("dash.noMembers")} />}
       </section>
       </div>
     </div>
@@ -1766,16 +2299,12 @@ function RemindersPage() {
 
   return (
     <div className="content reminders-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("remind.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("remind.title")}</h2>
-          </div>
-          <p>{t("remind.intro")}</p>
-        </div>
-      </div>
-      {error && <div className="error app-banner">{error}</div>}
+      <PageHeader
+        eyebrow={t("remind.eyebrow")}
+        title={t("remind.title")}
+        description={t("remind.intro")}
+      />
+      {error && <Alert>{error}</Alert>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       <div className="ledger-stats">
         <button type="button" className={`ledger-stat ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>
@@ -1851,11 +2380,9 @@ function RemindersPage() {
             </div>
           </div>
         ) : null}
-        {loading && <div className="empty">{t("remind.loading")}</div>}
+        {loading && <LoadingState label={t("remind.loading")} />}
         {!loading && !items.length && (
-          <div className="empty">
-            {filter === "all" ? t("remind.empty") : t("remind.emptyFilter")}
-          </div>
+          <EmptyState title={filter === "all" ? t("remind.empty") : t("remind.emptyFilter")} />
         )}
         {!loading && items.length > 0 && (
           <>
@@ -2081,20 +2608,26 @@ function ExpensesPage() {
   const [expenses, setExpenses] = useState<GymExpense[]>([]);
   const [form, setForm] = useState({ category: "electricity", title: "", amount: "", notes: "" });
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [year, month] = selected.split("-").map(Number);
 
+  const loadSeq = useRef(0);
   const load = async () => {
+    const requestId = ++loadSeq.current;
     setLoading(true);
     setError("");
     try {
-      setExpenses(await gymApi.expenses(year, month));
+      const rows = await gymApi.expenses(year, month);
+      if (requestId !== loadSeq.current) return;
+      setExpenses(rows);
     } catch (e) {
+      if (requestId !== loadSeq.current) return;
       setError(e instanceof Error ? e.message : t("exp.loadFail"));
       setExpenses([]);
     } finally {
-      setLoading(false);
+      if (requestId === loadSeq.current) setLoading(false);
     }
   };
 
@@ -2103,12 +2636,14 @@ function ExpensesPage() {
   }, [year, month]);
 
   const add = async () => {
+    if (saving) return;
     const amount = Number(form.amount);
     if (!amount || amount <= 0) {
       setError(t("exp.amountErr"));
       return;
     }
     setError("");
+    setSaving(true);
     try {
       await gymApi.createExpense({
         category: form.category,
@@ -2123,17 +2658,23 @@ function ExpensesPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("exp.saveFail"));
+    } finally {
+      setSaving(false);
     }
   };
 
   const remove = async (expense: GymExpense) => {
+    if (saving) return;
     if (!window.confirm(t("exp.deleteConfirm", { name: expense.title || expense.category_label, amount: money(expense.amount) }))) return;
+    setSaving(true);
     try {
       await gymApi.deleteExpense(expense.id);
       setNotice(t("exp.deleted"));
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("exp.deleteFail"));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -2149,11 +2690,11 @@ function ExpensesPage() {
   return (
     <div className="content">
       <div className="page-intro reports-intro">
-        <div>
-          <span className="eyebrow">{t("exp.eyebrow")}</span>
-          <h2>{t("exp.title")}</h2>
-          <p>{t("exp.intro")}</p>
-        </div>
+        <PageHeader
+          eyebrow={t("exp.eyebrow")}
+          title={t("exp.title")}
+          description={t("exp.intro")}
+        />
         <label className="reports-month">
           {t("common.month")}
           <select value={selected} onChange={(event) => setSelected(event.target.value)}>
@@ -2165,7 +2706,7 @@ function ExpensesPage() {
           </select>
         </label>
       </div>
-      {error && <div className="error app-banner">{error}</div>}
+      {error && <Alert>{error}</Alert>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       <div className="stats-grid reports-stats">
         <Stat
@@ -2256,8 +2797,8 @@ function ExpensesPage() {
             </label>
           </div>
           <div className="expense-form-actions">
-            <button className="primary" type="submit">
-              <Plus size={16} /> {t("exp.add")}
+            <button className="primary" type="submit" disabled={saving}>
+              <Plus size={16} /> {saving ? t("common.saving") : t("exp.add")}
             </button>
           </div>
         </form>
@@ -2283,9 +2824,9 @@ function ExpensesPage() {
           </div>
           <p>{t("exp.recorded", { month: months.find((item) => `${item.year}-${item.month}` === selected)?.label || "" })}</p>
         </div>
-        {loading && <div className="empty">{t("exp.loading")}</div>}
+        {loading && <LoadingState label={t("exp.loading")} />}
         {!loading && !expenses.length && (
-          <div className="empty">{t("exp.empty")}</div>
+          <EmptyState title={t("exp.empty")} />
         )}
         {!loading && expenses.length > 0 && (
           <table>
@@ -2309,7 +2850,7 @@ function ExpensesPage() {
                   <td data-label={t("common.notes")}>{expense.notes || "—"}</td>
                   <td data-label={t("common.actions")}>
                     <div className="table-actions">
-                      <button type="button" className="text-button" onClick={() => void remove(expense)}>
+                      <button type="button" className="text-button" disabled={saving} onClick={() => void remove(expense)}>
                         {t("common.delete")}
                       </button>
                     </div>
@@ -2331,9 +2872,37 @@ function ExpensesPage() {
   );
 }
 
-function Administration() {
+function Administration({
+  currentUser,
+  dashboard,
+  members,
+  memberships,
+  trainers,
+  classes,
+  payments,
+  attendance,
+  notifications,
+  go,
+  onUserUpdated,
+}: {
+  currentUser: AuthUser;
+  dashboard: GymDashboard | null;
+  members: Member[];
+  memberships: Membership[];
+  trainers: Trainer[];
+  classes: FitnessClass[];
+  payments: GymPayment[];
+  attendance: Attendance[];
+  notifications: GymNotification[];
+  go: (page: Page, options?: { status?: string }) => void;
+  onUserUpdated?: (user: AuthUser) => void;
+}) {
   const { t } = useLang();
+  const canAssignSuper = can(currentUser, "admin.assignSuper");
+  const canManageStaffAccount = (user: AdminUser) =>
+    canAssignSuper || (user.role || "").trim().toLowerCase().replace(/\s+/g, " ") !== "super admin";
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
@@ -2349,38 +2918,98 @@ function Administration() {
   });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [expenseCount, setExpenseCount] = useState<number | null>(null);
+  const [profile, setProfile] = useState({
+    first_name: currentUser.first_name,
+    last_name: currentUser.last_name,
+    email: currentUser.email,
+    phone: currentUser.phone || "",
+  });
+  const [passwords, setPasswords] = useState({ current: "", next: "", confirm: "" });
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [accountOpen, setAccountOpen] = useState(false);
 
-  const loadUsers = async () => {
-    try {
-      setUsers(await bookingApi.adminUsers(query));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("admin.loadFail"));
-    }
-  };
   useEffect(() => {
-    void loadUsers();
-  }, [query]);
+    setProfile({
+      first_name: currentUser.first_name,
+      last_name: currentUser.last_name,
+      email: currentUser.email,
+      phone: currentUser.phone || "",
+    });
+  }, [currentUser]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const now = new Date();
+    gymApi
+      .expenses(now.getFullYear(), now.getMonth() + 1)
+      .then((rows) => {
+        if (!cancelled) setExpenseCount(rows.length);
+      })
+      .catch(() => {
+        if (!cancelled) setExpenseCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      setUsersLoading(true);
+      try {
+        const rows = await bookingApi.adminUsers(query);
+        if (!cancelled) setUsers(rows);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : t("admin.loadFail"));
+      } finally {
+        if (!cancelled) setUsersLoading(false);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [query, t]);
 
   const save = async () => {
+    if (saving) return;
     setError("");
-    if (editing && form.password && form.password !== form.confirm_password) {
+    if (!form.first_name.trim() || !form.last_name.trim()) {
+      setError(t("admin.nameReq"));
+      return;
+    }
+    if (form.email.trim() && !isValidEmail(form.email)) {
+      setError(t("form.validEmail"));
+      return;
+    }
+    if (form.password && form.password !== form.confirm_password) {
       setError(t("admin.mismatch"));
       return;
     }
+    if (form.password && form.password.length < 8) {
+      setError(t("admin.passwordShort"));
+      return;
+    }
+    if (!editing && (!form.username.trim() || form.password.length < 8)) {
+      setError(t("admin.usernameReq"));
+      return;
+    }
+    setSaving(true);
     try {
       if (editing)
         await bookingApi.updateAdminUser(editing.id, {
-          first_name: form.first_name,
-          last_name: form.last_name,
-          email: form.email,
+          first_name: form.first_name.trim(),
+          last_name: form.last_name.trim(),
+          email: form.email.trim(),
           role: form.role,
           ...(form.password ? { password: form.password } : {}),
         });
       else {
-        if (!form.username.trim() || form.password.length < 8) {
-          setError(t("admin.usernameReq"));
-          return;
-        }
         await bookingApi.createAdminUser({
           username: form.username.trim(),
           password: form.password,
@@ -2393,31 +3022,108 @@ function Administration() {
       setNotice(editing ? t("admin.updated") : t("admin.created"));
       setOpen(false);
       setEditing(null);
-      await loadUsers();
+      setUsers(await bookingApi.adminUsers(query));
     } catch (e) {
       setError(e instanceof Error ? e.message : t("admin.saveFail"));
+    } finally {
+      setSaving(false);
     }
   };
   const toggle = async (user: AdminUser) => {
+    if (saving || !canManageStaffAccount(user)) return;
+    if (
+      !window.confirm(
+        t(user.is_active ? "admin.deactivateConfirm" : "admin.activateConfirm", {
+          name: user.username,
+        }),
+      )
+    )
+      return;
+    setSaving(true);
     try {
       await bookingApi.updateAdminUser(user.id, { is_active: !user.is_active });
       setNotice(user.is_active ? t("admin.deactivated") : t("admin.activated"));
-      await loadUsers();
+      setUsers(await bookingApi.adminUsers(query));
     } catch (e) {
       setError(e instanceof Error ? e.message : t("admin.updateFail"));
+    } finally {
+      setSaving(false);
     }
   };
   const remove = async (user: AdminUser) => {
+    if (saving || !canManageStaffAccount(user)) return;
     if (!window.confirm(t("admin.deleteConfirm", { name: user.username }))) return;
+    setSaving(true);
     try {
       await bookingApi.deleteAdminUser(user.id);
       setNotice(t("admin.deleted"));
-      await loadUsers();
+      setSelectedUser((current) => (current?.id === user.id ? null : current));
+      setUsers(await bookingApi.adminUsers(query));
     } catch (e) {
       setError(e instanceof Error ? e.message : t("admin.deleteFail"));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const saveProfile = async () => {
+    if (profileSaving) return;
+    setAccountError("");
+    if (!profile.first_name.trim() || !profile.last_name.trim()) {
+      setAccountError(t("admin.nameReq"));
+      return;
+    }
+    if (profile.email.trim() && !isValidEmail(profile.email)) {
+      setAccountError(t("form.validEmail"));
+      return;
+    }
+    setProfileSaving(true);
+    try {
+      const updated = await bookingApi.updateMyProfile({
+        first_name: profile.first_name.trim(),
+        last_name: profile.last_name.trim(),
+        email: profile.email.trim(),
+        phone: profile.phone.trim(),
+      });
+      onUserUpdated?.(updated);
+      setNotice(t("admin.profileSaved"));
+    } catch (e) {
+      setAccountError(e instanceof Error ? e.message : t("admin.profileFail"));
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+  const savePassword = async () => {
+    if (passwordSaving) return;
+    setAccountError("");
+    if (!passwords.current) {
+      setAccountError(t("admin.passwordFail"));
+      return;
+    }
+    if (passwords.next.length < 8) {
+      setAccountError(t("admin.passwordShort"));
+      return;
+    }
+    if (passwords.next !== passwords.confirm) {
+      setAccountError(t("admin.mismatch"));
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      const updated = await bookingApi.changeMyPassword({
+        current_password: passwords.current,
+        new_password: passwords.next,
+      });
+      onUserUpdated?.(updated);
+      setPasswords({ current: "", next: "", confirm: "" });
+      setNotice(t("admin.passwordChanged"));
+    } catch (e) {
+      setAccountError(e instanceof Error ? e.message : t("admin.passwordFail"));
+    } finally {
+      setPasswordSaving(false);
     }
   };
   const startEdit = (user: AdminUser) => {
+    if (!canManageStaffAccount(user)) return;
     setSelectedUser(null);
     setEditing(user);
     setForm({
@@ -2431,6 +3137,15 @@ function Administration() {
     });
     setOpen(true);
   };
+  const todayKey = localDay(new Date().toISOString());
+  const activeMemberships = memberships.filter(
+    (item) => item.status === "active" || item.status === "expiring_soon",
+  ).length;
+  const expiredMemberships = memberships.filter((item) => item.status === "expired").length;
+  const attendanceToday = attendance.filter(
+    (item) => item.checked_in_at && localDay(item.checked_in_at) === todayKey,
+  ).length;
+  const unreadNotifications = notifications.filter((item) => !item.is_read).length;
   const active = users.filter((user) => user.is_active).length;
   const admins = users.filter((user) => user.is_staff).length;
   const openCreate = () => {
@@ -2447,59 +3162,238 @@ function Administration() {
     });
     setOpen(true);
   };
+  const closeAccount = () => {
+    setAccountOpen(false);
+    setAccountError("");
+    setPasswords({ current: "", next: "", confirm: "" });
+  };
 
   return (
     <div className="content admin-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("admin.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("admin.title")}</h2>
-            <div className="page-head-actions">
-              <button
-                type="button"
-                className="primary"
-                onClick={openCreate}
-                aria-label={t("admin.add")}
-              >
-                <Plus size={16} />
-                <span>{t("admin.add")}</span>
-              </button>
-            </div>
-          </div>
-          <p>{t("admin.intro")}</p>
-        </div>
-      </div>
-      {error && <div className="error">{error}</div>}
+      <PageHeader
+        eyebrow={t("admin.eyebrow")}
+        title={t("admin.title")}
+        description={t("admin.intro")}
+        actions={
+          <>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setAccountOpen(true)}
+              aria-label={t("admin.account")}
+            >
+              <span>{t("admin.account")}</span>
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={openCreate}
+              aria-label={t("admin.add")}
+            >
+              <Plus size={16} />
+              <span>{t("admin.add")}</span>
+            </button>
+          </>
+        }
+      />
+      {error && <Alert>{error}</Alert>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
-      <div className="stats-grid">
-        <Stat
-          icon={Users}
-          label={t("admin.total")}
-          value={users.length}
-          detail={t("admin.accounts")}
-        />
-        <Stat
-          icon={Users}
-          label={t("admin.active")}
-          value={active}
-          detail={t("admin.canAccess")}
-          className="sage"
-        />
-        <Stat
-          icon={Activity}
-          label={t("admin.admins")}
-          value={admins}
-          detail={t("admin.staff")}
-          className="gold"
-        />
-        <Stat
-          icon={Activity}
-          label={t("admin.sessions")}
-          value="—"
-          detail={t("admin.sessionsDetail")}
-          className="ink"
-        />
+      <section className="admin-overview">
+        <div className="admin-overview-head">
+          <span className="eyebrow">{t("admin.gymOverview")}</span>
+          <h3>{t("admin.gymSnapshot")}</h3>
+        </div>
+        <div className="stats-grid admin-overview-stats">
+          <Stat
+            icon={Users}
+            label={t("dash.members")}
+            value={dashboard?.members ?? members.length}
+            detail={t("dash.active", { n: dashboard?.active_members ?? activeMemberships })}
+            className="sage"
+            onClick={() => go("members")}
+          />
+          <Stat
+            icon={ClipboardList}
+            label={t("dash.activeMemberships")}
+            value={dashboard?.active_members ?? activeMemberships}
+            detail={t("dash.currentlyActive")}
+            onClick={() => go("memberships", { status: "active" })}
+          />
+          <Stat
+            icon={CalendarCheck}
+            label={t("admin.expiredMemberships")}
+            value={expiredMemberships}
+            detail={t("status.expired")}
+            className="coral"
+            onClick={() => go("memberships", { status: "expired" })}
+          />
+          <Stat
+            icon={Users}
+            label={t("nav.trainers")}
+            value={trainers.length}
+            detail={t("train.team")}
+            onClick={() => go("trainers")}
+          />
+          <Stat
+            icon={Dumbbell}
+            label={t("nav.classes")}
+            value={classes.length}
+            detail={t("dash.classes")}
+            onClick={() => go("classes")}
+          />
+          <Stat
+            icon={CircleDollarSign}
+            label={t("nav.payments")}
+            value={payments.length}
+            detail={dashboard ? money(dashboard.cash_this_month) : t("admin.paymentsRecorded")}
+            className="gold"
+            onClick={() => go("payments")}
+          />
+          <Stat
+            icon={CalendarCheck}
+            label={t("nav.attendance")}
+            value={attendanceToday}
+            detail={t("admin.attendanceToday")}
+            onClick={() => go("attendance")}
+          />
+          <Stat
+            icon={Bell}
+            label={t("nav.notifications")}
+            value={unreadNotifications}
+            detail={t("admin.unreadNotifs")}
+            onClick={() => go("notifications")}
+          />
+          <Stat
+            icon={Receipt}
+            label={t("nav.expenses")}
+            value={expenseCount === null ? "—" : expenseCount}
+            detail={t("admin.expensesMonth")}
+            className="ink"
+            onClick={() => go("expenses")}
+          />
+        </div>
+      </section>
+      {(dashboard?.whatsapp_due ?? 0) > 0 && (
+        <section className="panel latest reminder-banner">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">WHATSAPP</span>
+              <h2>
+                {t((dashboard?.whatsapp_due || 0) === 1 ? "dash.waTitle" : "dash.waTitlePlural", {
+                  n: dashboard?.whatsapp_due ?? 0,
+                })}
+              </h2>
+            </div>
+            <button className="primary" onClick={() => go("reminders")}>
+              <MessageCircle size={16} /> {t("dash.waOpen")}
+            </button>
+          </div>
+        </section>
+      )}
+      {accountOpen && (
+      <div className="member-details-overlay">
+      <section className="panel form-panel member-details-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">{t("form.account")}</span>
+            <h3>{t("admin.account")}</h3>
+            <p>{t("admin.accountIntro")}</p>
+          </div>
+        </div>
+        {accountError && <Alert>{accountError}</Alert>}
+        <FormSection title={t("form.personal")}>
+          <FieldGrid>
+            <Field label={t("admin.first")}>
+              <input
+                required
+                value={profile.first_name}
+                onChange={(event) => setProfile({ ...profile, first_name: event.target.value })}
+              />
+            </Field>
+            <Field label={t("admin.last")}>
+              <input
+                required
+                value={profile.last_name}
+                onChange={(event) => setProfile({ ...profile, last_name: event.target.value })}
+              />
+            </Field>
+            <Field label={t("common.email")}>
+              <input
+                type="email"
+                value={profile.email}
+                onChange={(event) => setProfile({ ...profile, email: event.target.value })}
+              />
+            </Field>
+            <Field label={t("common.phone")}>
+              <PhoneField
+                value={profile.phone}
+                onChange={(event) => setProfile({ ...profile, phone: event.target.value })}
+              />
+            </Field>
+          </FieldGrid>
+          <div className="form-actions">
+            <button type="button" className="primary" disabled={profileSaving} onClick={() => void saveProfile()}>
+              {profileSaving ? t("common.saving") : t("admin.saveProfile")}
+            </button>
+          </div>
+        </FormSection>
+        <FormSection title={t("admin.changePassword")}>
+          <FieldGrid>
+            <Field label={t("admin.currentPassword")}>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={passwords.current}
+                onChange={(event) => setPasswords({ ...passwords, current: event.target.value })}
+              />
+            </Field>
+            <Field label={t("admin.newPassword")}>
+              <input
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                value={passwords.next}
+                onChange={(event) => setPasswords({ ...passwords, next: event.target.value })}
+              />
+            </Field>
+            <Field label={t("admin.confirm")} wide>
+              <input
+                type="password"
+                minLength={8}
+                autoComplete="new-password"
+                value={passwords.confirm}
+                onChange={(event) => setPasswords({ ...passwords, confirm: event.target.value })}
+              />
+            </Field>
+          </FieldGrid>
+          <div className="form-actions">
+            <button type="button" className="primary" disabled={passwordSaving} onClick={() => void savePassword()}>
+              {passwordSaving ? t("common.saving") : t("admin.changePassword")}
+            </button>
+            <button type="button" className="secondary" onClick={closeAccount} disabled={profileSaving || passwordSaving}>
+              {t("common.close")}
+            </button>
+          </div>
+        </FormSection>
+      </section>
+      </div>
+      )}
+      <div className="ledger-stats desk-stats">
+        <div className="ledger-stat">
+          <span>{t("admin.total")}</span>
+          <strong>{users.length}</strong>
+          <small>{t("admin.accounts")}</small>
+        </div>
+        <div className="ledger-stat featured">
+          <span>{t("admin.active")}</span>
+          <strong>{active}</strong>
+          <small>{t("admin.canAccess")}</small>
+        </div>
+        <div className="ledger-stat">
+          <span>{t("admin.admins")}</span>
+          <strong>{admins}</strong>
+          <small>{t("admin.staff")}</small>
+        </div>
       </div>
       <div className="toolbar">
         <div className="search">
@@ -2529,8 +3423,12 @@ function Administration() {
           </div>
           <div className="form-actions">
             <button className="secondary" onClick={() => setSelectedUser(null)}>{t("common.close")}</button>
-            <button className="secondary" onClick={() => startEdit(selectedUser)}>{t("admin.editUser")}</button>
-            <button className="primary" onClick={() => void remove(selectedUser)}>{t("admin.deleteUser")}</button>
+            {canManageStaffAccount(selectedUser) && (
+              <>
+                <button className="secondary" onClick={() => startEdit(selectedUser)}>{t("admin.editUser")}</button>
+                <button className="primary" disabled={saving} onClick={() => void remove(selectedUser)}>{t("admin.deleteUser")}</button>
+              </>
+            )}
           </div>
         </section>
         </div>
@@ -2594,6 +3492,17 @@ function Administration() {
                       }
                     />
                   </Field>
+                  <Field label={t("admin.confirm")}>
+                    <input
+                      type="password"
+                      required
+                      minLength={8}
+                      value={form.confirm_password}
+                      onChange={(event) =>
+                        setForm({ ...form, confirm_password: event.target.value })
+                      }
+                    />
+                  </Field>
                 </>
               )}
               {editing && (
@@ -2631,23 +3540,32 @@ function Administration() {
                   <option value="Admin">{t("role.admin")}</option>
                   <option value="Reception">{t("role.reception")}</option>
                   <option value="Trainer">{t("role.trainer")}</option>
-                  <option value="Super Admin">{t("role.superAdmin")}</option>
+                  {(canAssignSuper || form.role === "Super Admin") && (
+                    <option value="Super Admin">{t("role.superAdmin")}</option>
+                  )}
                 </select>
               </Field>
             </FieldGrid>
           </FormSection>
           <div className="form-actions">
-            <button type="button" className="secondary" onClick={() => setOpen(false)}>
+            <button type="button" className="secondary" onClick={() => setOpen(false)} disabled={saving}>
               {t("common.cancel")}
             </button>
-            <button type="button" className="primary" onClick={() => void save()}>
-              {editing ? t("common.save") : t("admin.create")}
+            <button type="button" className="primary" onClick={() => void save()} disabled={saving}>
+              {saving ? t("common.saving") : editing ? t("common.save") : t("admin.create")}
             </button>
           </div>
         </section>
         </div>
       )}
       <section className="panel table-wrap">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">{t("admin.staffUsers")}</span>
+            <h3>{t("admin.staff")}</h3>
+          </div>
+        </div>
+        {usersLoading && <LoadingState label={t("admin.loadingUsers")} />}
         <table>
           <thead>
             <tr>
@@ -2660,7 +3578,7 @@ function Administration() {
             </tr>
           </thead>
           <tbody>
-            {users.map((user) => (
+            {!usersLoading && users.map((user) => (
               <tr
                 className="record-card record-card-user"
                 key={user.id}
@@ -2685,6 +3603,8 @@ function Administration() {
                 </td>
                 <td className="record-actions" data-label={t("common.actions")}>
                   <div className="table-actions">
+                    {canManageStaffAccount(user) && (
+                    <>
                     <button
                       type="button"
                       className="text-button"
@@ -2698,6 +3618,7 @@ function Administration() {
                     <button
                       type="button"
                       className="text-button"
+                      disabled={saving}
                       onClick={(event) => {
                         event.stopPropagation();
                         void toggle(user);
@@ -2708,6 +3629,7 @@ function Administration() {
                     <button
                       type="button"
                       className="text-button"
+                      disabled={saving}
                       onClick={(event) => {
                         event.stopPropagation();
                         void remove(user);
@@ -2715,13 +3637,15 @@ function Administration() {
                     >
                       {t("common.delete")}
                     </button>
+                    </>
+                    )}
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {!users.length && <EmptyState title={t("admin.empty")} />}
+        {!usersLoading && !users.length && <EmptyState title={t("admin.empty")} />}
       </section>
     </div>
   );
@@ -2810,11 +3734,11 @@ function Settings({
 
   return (
     <div className="content settings-page">
-      <div className="page-intro">
-        <span className="eyebrow">{t("settings.title")}</span>
-        <h2>{t("settings.title")}</h2>
-        <p>{t("settings.intro")}</p>
-      </div>
+      <PageHeader
+        eyebrow={t("settings.title")}
+        title={t("settings.title")}
+        description={t("settings.intro")}
+      />
       <div className="settings-layout">
         <nav className="settings-nav">
           {sections.map((item) => (
@@ -3070,6 +3994,461 @@ function Settings({
 
 void Settings;
 
+function Member360Page({
+  memberId,
+  classes,
+  plans,
+  onBack,
+  onUpdate,
+  onDelete,
+  onPayment,
+  onCheckIn,
+  onCheckOut,
+}: {
+  memberId: number;
+  classes: FitnessClass[];
+  plans: Plan[];
+  onBack: () => void;
+  onUpdate: OnMemberUpdate;
+  onDelete: (id: number) => Promise<boolean> | void;
+  onPayment: OnPayment;
+  onCheckIn: (id: number) => Promise<boolean> | void;
+  onCheckOut: (id: number) => Promise<boolean> | void;
+}) {
+  const { t } = useLang();
+  const [data, setData] = useState<Member360 | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notFound, setNotFound] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const loadSeq = useRef(0);
+
+  const load = async () => {
+    const requestId = ++loadSeq.current;
+    setLoading(true);
+    setError("");
+    setNotFound(false);
+    try {
+      const profile = await gymApi.member360(memberId);
+      if (requestId !== loadSeq.current) return;
+      setData(profile);
+    } catch (e) {
+      if (requestId !== loadSeq.current) return;
+      setData(null);
+      if (isNotFoundError(e)) setNotFound(true);
+      else setError(e instanceof Error ? e.message : t("m360.loadFail"));
+    } finally {
+      if (requestId === loadSeq.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [memberId]);
+
+  const afterAction = async (ok: boolean | void) => {
+    if (ok !== false) await load();
+    return ok !== false;
+  };
+
+  const currentMembership = data?.memberships.find((item) => isCurrentMembershipStatus(item.status));
+  const currentVisit = data?.attendance.find((item) => item.is_inside);
+  const location = data ? memberLocation(data.member) : "";
+  const trainingClass = data?.training_class?.name || data?.member.class_name || "";
+
+  const openEdit = () => {
+    if (!data) return;
+    setEditing(true);
+  };
+
+  const openPay = () => {
+    if (!data || !currentMembership) return;
+    openRecordPaymentForm({
+      memberLabel: data.member.name,
+      membership: membershipFrom360(currentMembership),
+      onPayment: async (membershipId, payload) => {
+        const payment = await onPayment(membershipId, payload);
+        await load();
+        return payment;
+      },
+    });
+  };
+
+  const sendReminder = async () => {
+    const reminder = data?.reminder;
+    if (!reminder?.whatsapp_url || !isSafeWhatsAppUrl(reminder.whatsapp_url)) return;
+    window.open(reminder.whatsapp_url, "_blank", "noopener,noreferrer");
+    try {
+      await gymApi.markReminderSent(reminder.membership_id, reminder.message);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("remind.markFail"));
+    }
+  };
+
+  if (loading && !data) {
+    return (
+      <div className="content member-360">
+        <LoadingState label={t("common.loading")} />
+      </div>
+    );
+  }
+
+  if (notFound) {
+    return (
+      <div className="content member-360">
+        <PageHeader
+          eyebrow={t("m360.eyebrow")}
+          title={t("m360.notFound")}
+          description={t("m360.notFoundHint")}
+          actions={
+            <button type="button" className="secondary" onClick={onBack}>
+              {t("m360.back")}
+            </button>
+          }
+        />
+        <EmptyState title={t("m360.notFound")} hint={t("m360.notFoundHint")} />
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="content member-360">
+        <PageHeader
+          eyebrow={t("m360.eyebrow")}
+          title={t("page.member360")}
+          actions={
+            <button type="button" className="secondary" onClick={onBack}>
+              {t("m360.back")}
+            </button>
+          }
+        />
+        {error && <Alert>{error}</Alert>}
+      </div>
+    );
+  }
+
+  const member = data.member;
+  const paymentByMembership = new Map(data.memberships.map((item) => [item.id, item.plan.name]));
+
+  return (
+    <div className="content member-360">
+      {editing && (
+        <EditMemberOverlay
+          member={member}
+          classes={classes}
+          plans={plans}
+          currentMembership={currentMembership ? membershipFrom360(currentMembership) : undefined}
+          onClose={() => setEditing(false)}
+          onUpdate={async (id, payload) => {
+            const ok = await afterAction(await onUpdate(id, payload));
+            if (ok) setEditing(false);
+            return ok;
+          }}
+        />
+      )}
+      {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
+      {loading && <LoadingState label={t("common.loading")} />}
+
+      <section className="panel member-360-hero">
+        <div className="member-360-hero-top">
+          <button type="button" className="text-button" onClick={onBack}>
+            {t("m360.back")}
+          </button>
+          <div className="member-360-hero-actions">
+            <button type="button" className="secondary" onClick={openEdit}>
+              {t("common.edit")}
+            </button>
+            {currentMembership && (
+              <button type="button" className="primary" onClick={openPay}>
+                {t("pay.record")}
+              </button>
+            )}
+            {currentVisit ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void Promise.resolve(onCheckOut(member.id)).then(afterAction)}
+              >
+                {t("att.checkOut")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="secondary"
+                disabled={!currentMembership}
+                title={currentMembership ? undefined : t("att.required")}
+                onClick={() => void Promise.resolve(onCheckIn(member.id)).then(afterAction)}
+              >
+                {t("att.checkIn")}
+              </button>
+            )}
+            <button
+              type="button"
+              className="text-button"
+              onClick={() =>
+                void (async () => {
+                  const ok = await onDelete(member.id);
+                  if (ok !== false) onBack();
+                })()
+              }
+            >
+              {t("common.delete")}
+            </button>
+          </div>
+        </div>
+        <div className="member-360-hero-id">
+          <span className="member-360-avatar" aria-hidden="true">
+            {(member.name.trim().slice(0, 1) || "M").toUpperCase()}
+          </span>
+          <div>
+            <span className="eyebrow">
+              #{String(member.id).padStart(5, "0")}
+              {member.card_code ? ` · ${member.card_code}` : ""}
+            </span>
+            <h2>{member.name}</h2>
+            <div className="membership-details-badges">
+              {currentMembership ? (
+                <>
+                  {!member.is_active ? <Badge value="inactive" /> : null}
+                  <Badge value={currentMembership.status} />
+                  <Badge value={currentMembership.payment_status} payment />
+                </>
+              ) : (
+                <Badge value={member.is_active ? "active" : "inactive"} />
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="info-list">
+          <p>
+            <span>{t("common.phone")}</span>
+            <strong>{member.phone || t("m360.noPhone")}</strong>
+          </p>
+          <p>
+            <span>{t("common.email")}</span>
+            <strong>{member.email || t("m360.noEmail")}</strong>
+          </p>
+          <p>
+            <span>{t("members.cin")}</span>
+            <strong>{member.id_number || t("members.noCin")}</strong>
+          </p>
+          <p>
+            <span>{t("m360.class")}</span>
+            <strong>{trainingClass || t("members.noClass")}</strong>
+          </p>
+          <p className="is-wide">
+            <span>{t("m360.location")}</span>
+            <strong>{location || t("m360.noAddress")}</strong>
+          </p>
+        </div>
+      </section>
+
+      <section className="panel member-360-section">
+        <div className="panel-heading">
+          <h3>{t("m360.memberships")}</h3>
+        </div>
+        {data.memberships.length ? (
+          data.memberships.map((item) => {
+            const current = isCurrentMembershipStatus(item.status);
+            return (
+              <article className={`member-360-card${current ? " is-current" : ""}`} key={item.id}>
+                <div className="member-360-card-head">
+                  <div>
+                    {current ? <span className="eyebrow">{t("m360.current")}</span> : null}
+                    <h3>{item.plan.name}</h3>
+                  </div>
+                  <div className="membership-details-badges">
+                    <Badge value={item.status} />
+                    <Badge value={item.payment_status} payment />
+                  </div>
+                </div>
+                <div className="info-list">
+                  <p>
+                    <span>{t("members.startDate")}</span>
+                    <strong>{date(item.start_date)}</strong>
+                  </p>
+                  <p>
+                    <span>{t("remind.ends")}</span>
+                    <strong>{date(item.end_date)}</strong>
+                  </p>
+                  <p>
+                    <span>{t("members.price")}</span>
+                    <strong>{money(item.price)}</strong>
+                  </p>
+                  <p>
+                    <span>{t("members.paidCol")}</span>
+                    <strong>{money(item.total_paid)}</strong>
+                  </p>
+                  <p>
+                    <span>{t("members.stillOwes")}</span>
+                    <strong>{money(item.remaining_balance)}</strong>
+                  </p>
+                  {item.notes ? (
+                    <p className="is-wide">
+                      <span>{t("common.notes")}</span>
+                      <strong>{item.notes}</strong>
+                    </p>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })
+        ) : (
+          <EmptyState title={t("m360.noMemberships")} hint={t("m360.noMembershipsHint")} />
+        )}
+      </section>
+
+      <section className="panel member-360-section">
+        <div className="panel-heading">
+          <h3>{t("m360.payments")}</h3>
+        </div>
+        {data.payments.length ? (
+          data.payments.map((payment) => {
+            const planName = paymentByMembership.get(payment.membership_id);
+            return (
+              <article className="member-360-card" key={payment.id}>
+                <div className="member-360-card-head is-row">
+                  <span className="eyebrow">
+                    {planName || t("m360.membershipRef", { id: payment.membership_id })}
+                  </span>
+                  <h3>{payment.receipt_number || t("cash.receipt")}</h3>
+                  <strong className="member-360-amount">{money(payment.amount)}</strong>
+                </div>
+                <div className="info-list">
+                  <p>
+                    <span>{t("cash.date")}</span>
+                    <strong>{`${date(payment.received_at)} · ${clock(payment.received_at)}`}</strong>
+                  </p>
+                  <p>
+                    <span>{t("cash.receivedBy")}</span>
+                    <strong>{payment.received_by || "—"}</strong>
+                  </p>
+                  <p>
+                    <span>{t("cash.method")}</span>
+                    <strong>{payment.payment_method === "cash" ? t("cash.cash") : payment.payment_method || "—"}</strong>
+                  </p>
+                  {payment.remaining_balance != null ? (
+                    <p>
+                      <span>{t("members.stillOwes")}</span>
+                      <strong>{money(payment.remaining_balance)}</strong>
+                    </p>
+                  ) : null}
+                </div>
+                {payment.notes ? <p className="member-360-note">{payment.notes}</p> : null}
+              </article>
+            );
+          })
+        ) : (
+          <EmptyState title={t("m360.noPayments")} hint={t("m360.noPaymentsHint")} />
+        )}
+      </section>
+
+      <section className="panel member-360-section">
+        <div className="panel-heading">
+          <div>
+            <h3>{t("m360.attendance")}</h3>
+            {data.attendance.length >= 50 ? <p>{t("m360.attendanceHint")}</p> : null}
+          </div>
+        </div>
+        {data.attendance.length ? (
+          data.attendance.map((visit) => {
+            const duration = visitDurationLabel(visit.checked_in_at, visit.checked_out_at, t);
+            return (
+              <article className="member-360-card" key={visit.id}>
+                <div className="member-360-card-head">
+                  <div>
+                    {visit.class_name ? <span className="eyebrow">{visit.class_name}</span> : null}
+                    <h3>{date(visit.checked_in_at)}</h3>
+                  </div>
+                  {visit.is_inside ? (
+                    <div className="membership-details-badges">
+                      <Badge value="active" />
+                    </div>
+                  ) : null}
+                </div>
+                <div className="info-list">
+                  <p>
+                    <span>{t("att.inAt")}</span>
+                    <strong>{clock(visit.checked_in_at)}</strong>
+                  </p>
+                  <p>
+                    <span>{t("att.outAt")}</span>
+                    <strong>
+                      {visit.checked_out_at ? clock(visit.checked_out_at) : visit.is_inside ? t("m360.stillInside") : "—"}
+                    </strong>
+                  </p>
+                  {duration ? (
+                    <p>
+                      <span>{t("m360.duration")}</span>
+                      <strong>{duration}</strong>
+                    </p>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })
+        ) : (
+          <EmptyState title={t("m360.noAttendance")} hint={t("m360.noAttendanceHint")} />
+        )}
+      </section>
+
+      <section className="panel member-360-section">
+        <div className="panel-heading">
+          <h3>{t("m360.reminder")}</h3>
+        </div>
+        {data.reminder ? (
+          <article className="member-360-card">
+            <div className="member-360-card-head">
+              <div>
+                <h3>{reasonLabel(data.reminder.reasons[0] || data.reminder.status, t)}</h3>
+              </div>
+              <div className="membership-details-badges">
+                <Badge value={data.reminder.status} />
+                <Badge value={data.reminder.payment_status} payment />
+              </div>
+            </div>
+            <div className="info-list">
+              <p>
+                <span>{t("remind.ends")}</span>
+                <strong>{date(data.reminder.end_date)}</strong>
+              </p>
+              <p>
+                <span>{t("remind.stillOwes")}</span>
+                <strong>{money(data.reminder.remaining)}</strong>
+              </p>
+              {data.reminder.last_sent_at ? (
+                <p>
+                  <span>{t("remind.today")}</span>
+                  <strong>{`${date(data.reminder.last_sent_at)} · ${clock(data.reminder.last_sent_at)}`}</strong>
+                </p>
+              ) : null}
+              {data.reminder.message ? (
+                <p className="is-wide">
+                  <span>{t("common.notes")}</span>
+                  <strong>{data.reminder.message}</strong>
+                </p>
+              ) : null}
+            </div>
+            <div className="form-actions">
+              {data.reminder.whatsapp_url && isSafeWhatsAppUrl(data.reminder.whatsapp_url) ? (
+                <button type="button" className="primary" onClick={() => void sendReminder()}>
+                  {t("remind.send")}
+                </button>
+              ) : (
+                <span className="field-hint">{t("remind.addPhone")}</span>
+              )}
+            </div>
+          </article>
+        ) : (
+          <EmptyState title={t("m360.noReminder")} hint={t("m360.noReminderHint")} />
+        )}
+      </section>
+    </div>
+  );
+}
+
 function Members({
   people,
   query,
@@ -3080,8 +4459,8 @@ function Members({
   onCheckIn,
   onCreate,
   onUpdate,
-  onDelete,
   onPayment,
+  onOpenProfile,
 }: {
   people: Member[];
   query: string;
@@ -3090,6 +4469,7 @@ function Members({
   plans: Plan[];
   memberships: Membership[];
   onCheckIn: (id: number) => void;
+  onOpenProfile: (id: number) => void;
   onCreate: (payload: {
     first_name: string;
     last_name: string;
@@ -3105,7 +4485,7 @@ function Members({
     start_date?: string;
     amount_paid?: number | string;
     remaining?: number | string;
-  }) => void;
+  }) => Promise<boolean> | void;
   onUpdate: (
     id: number,
     payload: {
@@ -3130,36 +4510,25 @@ function Members({
         notes?: string;
       };
     },
-  ) => void;
-  onDelete: (id: number) => void;
+  ) => Promise<boolean> | void;
   onPayment: OnPayment;
 }) {
   const { t } = useLang();
   const [open, setOpen] = useState(false);
+  const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [editingMembership, setEditingMembership] = useState<Membership | undefined>();
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
   const memberStatuses = useMemo(() => {
     const statuses: Record<number, string> = {};
-    memberships.forEach((membership) => {
-      if (!statuses[membership.member_id] || membership.status === "active")
-        statuses[membership.member_id] = membership.status;
+    indexLatestMembership(memberships).forEach((membership, id) => {
+      statuses[id] = membership.status;
     });
     return statuses;
   }, [memberships]);
   const membershipByMemberId = useMemo(() => indexLatestMembership(memberships), [memberships]);
   const membershipFor = (memberId: number) => membershipByMemberId.get(memberId);
-  const [form, setForm] = useState({
-    first_name: "",
-    last_name: "",
-    phone: "",
-    email: "",
-    id_number: "",
-    address: "",
-    city: "",
-    class_id: "",
-    plan_id: "",
-    start_date: new Date().toISOString().slice(0, 10),
-    amount_paid: "0",
-    remaining: "",
-  });
+  const [form, setForm] = useState<MemberFormState>(blankMemberForm);
   const [statusFilter, setStatusFilter] = useState("");
   const [classFilter, setClassFilter] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("");
@@ -3216,309 +4585,109 @@ function Members({
   }, [query, statusFilter, classFilter, paymentFilter, people.length]);
   const pagedPeople = visiblePeople.slice(0, shown);
 
-  const submit = () => {
-    if (!form.first_name.trim() || !form.last_name.trim()) return;
-    if (!form.id_number.trim() || !form.address.trim()) return;
-    onCreate({
-      first_name: form.first_name.trim(),
-      last_name: form.last_name.trim(),
-      phone: form.phone.trim(),
-      email: form.email.trim(),
-      id_number: form.id_number.trim(),
-      address: form.address.trim(),
-      city: form.city.trim(),
-      country: "Morocco",
-      class_id: form.class_id ? Number(form.class_id) : undefined,
-      plan_id: form.plan_id ? Number(form.plan_id) : undefined,
-      start_date: form.start_date || undefined,
-      amount_paid: form.amount_paid || 0,
-      remaining: form.remaining === "" ? undefined : form.remaining,
-    });
-    setForm({
-      first_name: "",
-      last_name: "",
-      phone: "",
-      email: "",
-      id_number: "",
-      address: "",
-      city: "",
-      class_id: "",
-      plan_id: "",
-      start_date: new Date().toISOString().slice(0, 10),
-      amount_paid: "0",
-      remaining: "",
-    });
+  const closeForm = () => {
     setOpen(false);
+    setEditingMember(null);
+    setEditingMembership(undefined);
+    setFormError("");
   };
 
-  const editMember = (member: Member) => {
-    const names = member.name.trim().split(/\s+/);
-    const currentMembership = membershipFor(member.id);
-    document.querySelector(".member-details-overlay")?.remove();
-    const overlay = document.createElement("div");
-    overlay.className = "member-details-overlay";
-    overlay.onclick = (event) => {
-      if (event.target === overlay) dismissOverlay(overlay);
-    };
-    const panel = document.createElement("section");
-    panel.className = "member-details-panel form-panel";
-    const label = document.createElement("span");
-    label.className = "eyebrow";
-    label.textContent = t("members.editHead");
-    const heading = document.createElement("h2");
-    heading.textContent = t("members.updateInfo");
-    panel.append(label, heading);
-    const fields = [
-      [t("common.firstName"), names[0] || "", "text"],
-      [t("common.lastName"), names.slice(1).join(" ") || "", "text"],
-      [t("common.phone"), member.phone || "", "tel"],
-      [t("common.email"), member.email || "", "email"],
-      [t("members.cin"), member.id_number || "", "text"],
-      [t("members.address"), member.address || "", "text"],
-      [t("members.city"), member.city || "", "text"],
-    ];
-    const inputs = fields.map(([fieldLabel, value, type]) => {
-      const field = document.createElement("label");
-      field.textContent = fieldLabel;
-      const input = document.createElement("input");
-      input.type = type;
-      input.value = value;
-      field.append(input);
-      panel.append(field);
-      return input;
-    });
-    const extraRow = document.createElement("div");
-    extraRow.className = "date-fields";
-    const classField = document.createElement("label");
-    classField.textContent = t("members.gymClass");
-    const classSelect = document.createElement("select");
-    const noneOption = document.createElement("option");
-    noneOption.value = "";
-    noneOption.textContent = t("members.noClass");
-    classSelect.append(noneOption);
-    classes.forEach((item) => {
-      const option = document.createElement("option");
-      option.value = String(item.id);
-      option.textContent = item.name;
-      classSelect.append(option);
-    });
-    classField.append(classSelect);
-    if (member.class_id) classSelect.value = String(member.class_id);
-    const priceField = document.createElement("label");
-    priceField.textContent = t("members.priceMad");
-    const priceInput = document.createElement("input");
-    priceInput.type = "number";
-    priceInput.min = "0";
-    priceInput.step = "0.01";
-    priceInput.placeholder = "0.00";
-    priceInput.value = currentMembership
-      ? String(currentMembership.price)
-      : selectablePlans(plans)[0]
-        ? String(selectablePlans(plans)[0].price)
-        : "";
-    priceField.append(priceInput);
-    extraRow.append(classField);
-    const remainingRow = document.createElement("div");
-    remainingRow.className = "date-fields";
-    const remainingField = document.createElement("label");
-    remainingField.textContent = t("pay.owes");
-    const remainingInput = document.createElement("input");
-    remainingInput.type = "number";
-    remainingInput.min = "0";
-    remainingInput.step = "0.01";
-    remainingInput.placeholder = "20";
-    remainingInput.value = currentMembership
-      ? String(currentMembership.remaining_balance)
-      : "";
-    remainingField.append(remainingInput);
-    remainingRow.append(priceField, remainingField);
-    panel.append(extraRow, remainingRow);
-    const actions = document.createElement("div");
-    actions.className = "form-actions";
-    const cancel = document.createElement("button");
-    cancel.className = "secondary";
-    cancel.type = "button";
-    cancel.textContent = t("common.cancel");
-    cancel.onclick = () => dismissOverlay(overlay);
-    const save = document.createElement("button");
-    save.className = "primary";
-    save.type = "button";
-    save.textContent = t("common.save");
-    save.onclick = () => {
-      if (!inputs[0].value.trim() || !inputs[1].value.trim()) return;
-      const priceValue = priceInput.value.trim();
-      const remainingValue = remainingInput.value.trim();
-      const originalRemaining = currentMembership
-        ? Number(currentMembership.remaining_balance)
-        : undefined;
-      const remainingNumber = remainingValue === "" ? undefined : Number(remainingValue);
-      const remainingChanged =
-        remainingNumber !== undefined && remainingNumber !== originalRemaining;
-      onUpdate(member.id, {
-        first_name: inputs[0].value.trim(),
-        last_name: inputs[1].value.trim(),
-        phone: inputs[2].value.trim(),
-        email: inputs[3].value.trim(),
-        id_number: inputs[4].value.trim(),
-        address: inputs[5].value.trim(),
-        city: inputs[6].value.trim(),
-        country: member.country || "Morocco",
-        class_id: classSelect.value ? Number(classSelect.value) : null,
-        price: priceValue === "" ? undefined : Number(priceValue),
-        remaining: remainingChanged ? remainingNumber : undefined,
-        plan_id: currentMembership?.plan_id || (plans[0] ? plans[0].id : undefined),
-        start_date: currentMembership?.start_date.slice(0, 10) || new Date().toISOString().slice(0, 10),
-        membership: currentMembership
-          ? {
-              id: currentMembership.id,
-              plan_id: currentMembership.plan_id,
-              start_date: currentMembership.start_date.slice(0, 10),
-              notes: currentMembership.notes || "",
-            }
-          : undefined,
-      });
-      dismissOverlay(overlay);
-    };
-    actions.append(cancel, save);
-    panel.append(actions);
-    overlay.append(panel);
-    document.body.append(overlay);
+  const openCreateForm = () => {
+    setEditingMember(null);
+    setEditingMembership(undefined);
+    setForm(blankMemberForm());
+    setFormError("");
+    setOpen(true);
+  };
+
+  const openEditForm = (member: Member, membership?: Membership) => {
+    setEditingMember(member);
+    setEditingMembership(membership);
+    setForm(memberFormValues(member, membership, plans));
+    setFormError("");
+    setOpen(true);
     void gymApi.memberClass(member.id).then((memberClass) => {
       if (memberClass.training_class_id) {
-        classSelect.value = String(memberClass.training_class_id);
+        setForm((current) => ({ ...current, class_id: String(memberClass.training_class_id) }));
       }
     }).catch(() => undefined);
   };
 
-  const showMemberDetails = (member: Member) => {
-    const currentMembership = membershipFor(member.id);
-    const membershipPlanName = currentMembership
-      ? plans.find((plan) => plan.id === currentMembership.plan_id)?.name || `Plan #${currentMembership.plan_id}`
-      : t("members.noPlan");
-    document.querySelector(".member-details-overlay")?.remove();
-    const overlay = document.createElement("div");
-    overlay.className = "member-details-overlay";
-    overlay.onclick = (event) => {
-      if (event.target === overlay) dismissOverlay(overlay);
-    };
-    const panel = document.createElement("section");
-    panel.className = "member-details-panel membership-details-panel member-card";
-
-    const close = document.createElement("button");
-    close.className = "membership-details-x";
-    close.type = "button";
-    close.setAttribute("aria-label", t("common.close"));
-    close.textContent = "×";
-    close.onclick = () => dismissOverlay(overlay);
-
-    const eyebrow = document.createElement("span");
-    eyebrow.className = "eyebrow";
-    eyebrow.textContent = t("members.title");
-    const heading = document.createElement("h2");
-    heading.textContent = member.name;
-    const badges = document.createElement("div");
-    badges.className = "membership-details-badges";
-    const membershipStatus = currentMembership?.status ?? "inactive";
-    const statusBadge = document.createElement("span");
-    statusBadge.className = `status ${membershipStatus === "inactive" ? "expired" : membershipStatus}`;
-    statusBadge.textContent = statusLabel(membershipStatus);
-    badges.append(statusBadge);
-    if (currentMembership) {
-      const paymentBadge = document.createElement("span");
-      paymentBadge.className = `status payment ${currentMembership.payment_status}`;
-      paymentBadge.textContent = statusLabel(currentMembership.payment_status);
-      badges.append(paymentBadge);
+  const submit = async () => {
+    if (saving) return;
+    if (!form.first_name.trim() || !form.last_name.trim()) return;
+    if (form.email.trim() && !isValidEmail(form.email)) {
+      setFormError(t("form.validEmail"));
+      return;
     }
-
-    const remaining = currentMembership ? Number(currentMembership.remaining_balance) : 0;
-    const owing = document.createElement("div");
-    owing.className = remaining > 0 ? "member-card-owing" : "member-card-owing settled";
-    const owingLabel = document.createElement("span");
-    owingLabel.textContent = remaining > 0 ? t("members.stillOwes") : t("members.settled");
-    const owingValue = document.createElement("strong");
-    owingValue.textContent = currentMembership ? (remaining > 0 ? money(remaining) : t("status.paid")) : t("members.noPlan");
-    owing.append(owingLabel, owingValue);
-
-    const contact = document.createElement("p");
-    contact.className = "membership-details-meta";
-    contact.textContent = [
-      member.id_number ? `CIN ${member.id_number}` : "",
-      member.phone || "",
-      member.class_name || "",
-    ]
-      .filter(Boolean)
-      .join("  ·  ");
-    contact.dataset.field = "gym-class-line";
-
-    const facts = document.createElement("div");
-    facts.className = "member-card-facts";
-    const factRows: Array<[string, string]> = [
-      [t("memberships.plan"), membershipPlanName],
-      [t("members.paidCol"), currentMembership ? money(currentMembership.total_paid) : money(0)],
-      [t("remind.ends"), currentMembership ? date(currentMembership.end_date) : "—"],
-    ];
-    factRows.forEach(([key, value]) => {
-      const row = document.createElement("div");
-      const caption = document.createElement("span");
-      caption.textContent = key;
-      const strong = document.createElement("strong");
-      strong.textContent = value;
-      row.append(caption, strong);
-      facts.append(row);
-    });
-
-    const actions = document.createElement("div");
-    actions.className = "form-actions membership-details-actions";
-    const pay = document.createElement("button");
-    pay.className = "primary";
-    pay.type = "button";
-    pay.textContent = t("members.pay");
-    pay.onclick = () => {
-      if (!currentMembership) return;
-      dismissOverlay(overlay);
-      window.setTimeout(() => {
-        openRecordPaymentForm({
-          memberLabel: member.name,
-          membership: currentMembership,
-          onPayment,
+    if (!editingMember && (!form.id_number.trim() || !form.address.trim())) return;
+    const remainingValue = form.remaining === "" ? undefined : Number(form.remaining);
+    if (remainingValue !== undefined && (!Number.isFinite(remainingValue) || remainingValue < 0)) {
+      setFormError(t("form.validAmount"));
+      return;
+    }
+    setFormError("");
+    setSaving(true);
+    try {
+      if (editingMember) {
+        const priceValue = form.price.trim();
+        const originalRemaining = editingMembership ? Number(editingMembership.remaining_balance) : undefined;
+        const remainingChanged = remainingValue !== undefined && remainingValue !== originalRemaining;
+        const planId = form.plan_id ? Number(form.plan_id) : editingMembership?.plan_id || (plans[0] ? plans[0].id : undefined);
+        const startDate = form.start_date || editingMembership?.start_date.slice(0, 10) || new Date().toISOString().slice(0, 10);
+        const ok = await onUpdate(editingMember.id, {
+          first_name: form.first_name.trim(),
+          last_name: form.last_name.trim(),
+          phone: form.phone.trim(),
+          email: form.email.trim(),
+          id_number: form.id_number.trim(),
+          address: form.address.trim(),
+          city: form.city.trim(),
+          country: editingMember.country || "Morocco",
+          class_id: form.class_id ? Number(form.class_id) : null,
+          price: priceValue === "" ? undefined : Number(priceValue),
+          remaining: remainingChanged ? remainingValue : undefined,
+          plan_id: planId,
+          start_date: startDate,
+          membership: editingMembership
+            ? {
+                id: editingMembership.id,
+                plan_id: planId || editingMembership.plan_id,
+                start_date: startDate,
+                notes: editingMembership.notes || "",
+              }
+            : undefined,
         });
-      }, 160);
-    };
-    if (!currentMembership) pay.disabled = true;
-    const edit = document.createElement("button");
-    edit.className = "secondary";
-    edit.type = "button";
-    edit.textContent = t("common.edit");
-    edit.onclick = () => {
-      dismissOverlay(overlay);
-      window.setTimeout(() => editMember(member), 160);
-    };
-    const remove = document.createElement("button");
-    remove.className = "text-button";
-    remove.type = "button";
-    remove.textContent = t("common.delete");
-    remove.onclick = () => {
-      if (window.confirm(t("member.deleteConfirm"))) {
-        dismissOverlay(overlay);
-        onDelete(member.id);
+        if (ok === false) return;
+        setForm(blankMemberForm());
+        closeForm();
+        return;
       }
-    };
-    actions.append(pay, edit, remove);
-    panel.append(close, eyebrow, heading, badges, contact, owing, facts, actions);
-    overlay.append(panel);
-    document.body.append(overlay);
-    requestAnimationFrame(() => overlay.classList.add("is-open"));
-    if (!member.class_name) {
-      void gymApi.memberClass(member.id).then((memberClass) => {
-        const className = memberClass.training_class_id
-          ? classes.find((item) => item.id === memberClass.training_class_id)?.name || `Class #${memberClass.training_class_id}`
-          : "";
-        const line = overlay.querySelector("[data-field='gym-class-line']");
-        if (line && className) {
-          const parts = [member.id_number ? `CIN ${member.id_number}` : "", member.phone || "", className].filter(Boolean);
-          line.textContent = parts.join("  ·  ");
-        }
-      }).catch(() => undefined);
+      const paid = Number(form.amount_paid || 0);
+      if (!Number.isFinite(paid) || paid < 0) {
+        setFormError(t("form.validAmount"));
+        return;
+      }
+      const ok = await onCreate({
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim(),
+        phone: form.phone.trim(),
+        email: form.email.trim(),
+        id_number: form.id_number.trim(),
+        address: form.address.trim(),
+        city: form.city.trim(),
+        country: "Morocco",
+        class_id: form.class_id ? Number(form.class_id) : undefined,
+        plan_id: form.plan_id ? Number(form.plan_id) : undefined,
+        start_date: form.start_date || undefined,
+        amount_paid: paid,
+        remaining: remainingValue,
+      });
+      if (ok === false) return;
+      setForm(blankMemberForm());
+      closeForm();
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -3652,46 +4821,44 @@ function Members({
 
   return (
     <div className="content members-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("members.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("members.title")}</h2>
-            <div className="page-head-actions">
-              <button
-                type="button"
-                className="secondary"
-                disabled={importing}
-                aria-label={t("common.export")}
-                onClick={() => void exportBackup()}
-              >
-                <Download size={15} />
-                <span>{t("common.export")}</span>
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={importing}
-                aria-label={t("common.import")}
-                onClick={() => backupInputRef.current?.click()}
-              >
-                <Upload size={15} />
-                <span>{importing ? t("backup.busy") : t("common.import")}</span>
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => setOpen(true)}
-                aria-label={t("members.add")}
-              >
-                <Plus size={16} />
-                <span>{t("members.add")}</span>
-              </button>
-            </div>
-          </div>
-          <p>{t("members.intro")}</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={t("members.eyebrow")}
+        title={t("members.title")}
+        description={t("members.intro")}
+        actions={
+          <>
+            <button
+              type="button"
+              className="secondary"
+              disabled={importing}
+              aria-label={t("common.export")}
+              onClick={() => void exportBackup()}
+            >
+              <Download size={15} />
+              <span>{t("common.export")}</span>
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={importing}
+              aria-label={t("common.import")}
+              onClick={() => backupInputRef.current?.click()}
+            >
+              <Upload size={15} />
+              <span>{importing ? t("backup.busy") : t("common.import")}</span>
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={openCreateForm}
+              aria-label={t("members.add")}
+            >
+              <Plus size={16} />
+              <span>{t("members.add")}</span>
+            </button>
+          </>
+        }
+      />
       <input
         ref={backupInputRef}
         type="file"
@@ -3773,154 +4940,31 @@ function Members({
       </div>
       {open && (
         <section className="panel form-panel member-form">
-          <span className="eyebrow">{t("members.new")}</span>
-          <FormSection title={t("form.personal")}>
-            <FieldGrid>
-              <Field label={t("common.firstName")}>
-                <input
-                  value={form.first_name}
-                  onChange={(event) =>
-                    setForm({ ...form, first_name: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("common.lastName")}>
-                <input
-                  value={form.last_name}
-                  onChange={(event) =>
-                    setForm({ ...form, last_name: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("members.cin")} hint={t("members.cinHelp")}>
-                <input
-                  value={form.id_number}
-                  placeholder={t("members.cinPh")}
-                  onChange={(event) =>
-                    setForm({ ...form, id_number: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("members.city")}>
-                <input
-                  value={form.city}
-                  placeholder={t("members.cityPh")}
-                  onChange={(event) =>
-                    setForm({ ...form, city: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("members.address")} wide>
-                <input
-                  value={form.address}
-                  placeholder={t("members.addressPh")}
-                  onChange={(event) =>
-                    setForm({ ...form, address: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("common.phone")}>
-                <input
-                  value={form.phone}
-                  onChange={(event) =>
-                    setForm({ ...form, phone: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("common.email")}>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(event) =>
-                    setForm({ ...form, email: event.target.value })
-                  }
-                />
-              </Field>
-            </FieldGrid>
-          </FormSection>
-          <FormSection title={t("form.membership")}>
-            <FieldGrid>
-              <Field label={t("members.class")}>
-                <select
-                  value={form.class_id}
-                  onChange={(event) =>
-                    setForm({ ...form, class_id: event.target.value })
-                  }
-                >
-                  <option value="">{t("members.selectClass")}</option>
-                  {classes.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label={t("memberships.plan")}>
-                <select
-                  value={form.plan_id}
-                  onChange={(event) =>
-                    setForm({ ...form, plan_id: event.target.value })
-                  }
-                >
-                  <option value="">{t("members.selectPlan")}</option>
-                  {selectablePlans(plans).map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label={t("members.startDate")}>
-                <input
-                  type="date"
-                  value={form.start_date}
-                  onChange={(event) =>
-                    setForm({ ...form, start_date: event.target.value })
-                  }
-                />
-              </Field>
-            </FieldGrid>
-          </FormSection>
-          <FormSection title={t("form.payment")}>
-            <p className="form-caption">{t("members.paymentHelp")}</p>
-            <FieldGrid>
-              <Field label={t("members.amountPaid")}>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="100"
-                  value={form.amount_paid}
-                  onChange={(event) =>
-                    setForm({ ...form, amount_paid: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label={t("pay.owes")}>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="20"
-                  value={form.remaining}
-                  onChange={(event) =>
-                    setForm({ ...form, remaining: event.target.value })
-                  }
-                />
-              </Field>
-            </FieldGrid>
-          </FormSection>
+          <span className="eyebrow">{editingMember ? t("members.editHead") : t("members.new")}</span>
+          <MemberRecordFields
+            mode={editingMember ? "edit" : "create"}
+            form={form}
+            setForm={setForm}
+            classes={classes}
+            plans={plans}
+          />
+          {formError && <Alert>{formError}</Alert>}
           <div className="form-actions">
-            <button type="button" className="secondary" onClick={() => setOpen(false)}>
+            <button type="button" className="secondary" onClick={closeForm} disabled={saving}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
               className="primary"
-              onClick={submit}
-              disabled={!form.first_name.trim() || !form.last_name.trim() || !form.id_number.trim() || !form.address.trim()}
+              onClick={() => void submit()}
+              disabled={
+                saving ||
+                !form.first_name.trim() ||
+                !form.last_name.trim() ||
+                (!editingMember && (!form.id_number.trim() || !form.address.trim()))
+              }
             >
-              {t("members.create")}
+              {saving ? t("common.saving") : editingMember ? t("common.save") : t("members.create")}
             </button>
           </div>
         </section>
@@ -3944,7 +4988,7 @@ function Members({
               const memberStatus = memberStatuses[member.id];
               const remaining = Number(membership?.remaining_balance || 0);
               return (
-                <tr className="record-card record-card-member" key={member.id} onClick={() => showMemberDetails(member)}>
+                <tr className="record-card record-card-member" key={member.id} onClick={() => onOpenProfile(member.id)}>
                   <td className="record-name" data-label={t("dash.member")}>
                     <strong>{member.name}</strong>
                     {membership ? (
@@ -3952,6 +4996,19 @@ function Members({
                     ) : (
                       <span className="status expired">{t("members.noPlan")}</span>
                     )}
+                    {membership ? (
+                      <span
+                        className={`record-remain${
+                          memberStatus === "expired" || (memberStatus === "expiring_soon")
+                            ? memberStatus === "expired"
+                              ? " is-expired"
+                              : " is-soon"
+                            : ""
+                        }`}
+                      >
+                        {membershipRemainLabel(membership.end_date, memberStatus || membership.status, t)}
+                      </span>
+                    ) : null}
                     <small>
                       {member.id_number ? `CIN ${member.id_number}` : t("members.noCin")}
                       {member.phone ? ` · ${member.phone}` : ""}
@@ -3974,6 +5031,26 @@ function Members({
                   </td>
                   <td className="record-actions" data-label={t("common.actions")}>
                     <div className="table-actions">
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenProfile(member.id);
+                        }}
+                      >
+                        {t("m360.open")}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEditForm(member, membership);
+                        }}
+                      >
+                        {t("common.edit")}
+                      </button>
                       {membership ? (
                         <button
                           type="button"
@@ -3987,7 +5064,7 @@ function Members({
                             });
                           }}
                         >
-                          Payment
+                          {t("pay.record")}
                         </button>
                       ) : null}
                       <button
@@ -4004,7 +5081,7 @@ function Members({
                           onCheckIn(member.id);
                         }}
                       >
-                        Check in
+                        {t("att.checkIn")}
                       </button>
                     </div>
                   </td>
@@ -4036,7 +5113,7 @@ function ClassesPage({
     class_type: string;
     price_per_member: number | string;
     is_active?: boolean;
-  }) => void;
+  }) => Promise<boolean> | void;
   onUpdate: (
     id: number,
     payload: {
@@ -4045,8 +5122,8 @@ function ClassesPage({
       price_per_member: number | string;
       is_active?: boolean;
     },
-  ) => void;
-  onDelete: (id: number) => void;
+  ) => Promise<boolean> | void;
+  onDelete: (id: number) => Promise<boolean> | void;
 }) {
   const { t } = useLang();
   const emptyForm = {
@@ -4057,6 +5134,7 @@ function ClassesPage({
   };
   const [form, setForm] = useState(emptyForm);
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = classes.find((item) => item.id === selectedId) || null;
@@ -4087,50 +5165,59 @@ function ClassesPage({
     setOpen(true);
   };
 
-  const saveClass = () => {
-    if (!form.name.trim()) return;
+  const saveClass = async () => {
+    if (saving || !form.name.trim()) return;
+    const price = Number(form.price_per_member || 0);
+    if (!Number.isFinite(price) || price < 0) return;
     const payload = {
       name: form.name.trim(),
       class_type: form.class_type,
-      price_per_member: Number(form.price_per_member || 0),
+      price_per_member: price,
       is_active: form.is_active,
     };
-    if (editingId) onUpdate(editingId, payload);
-    else onCreate(payload);
-    closeForm();
+    setSaving(true);
+    try {
+      const ok = editingId ? await onUpdate(editingId, payload) : await onCreate(payload);
+      if (ok === false) return;
+      closeForm();
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const removeClass = (item: FitnessClass) => {
-    if (!window.confirm(t("class.confirmDelete"))) return;
-    if (selectedId === item.id) setSelectedId(null);
-    if (editingId === item.id) closeForm();
-    onDelete(item.id);
+  const removeClass = async (item: FitnessClass) => {
+    if (saving || !window.confirm(t("class.confirmDelete"))) return;
+    setSaving(true);
+    try {
+      const ok = await onDelete(item.id);
+      if (ok === false) return;
+      if (selectedId === item.id) setSelectedId(null);
+      if (editingId === item.id) closeForm();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="content">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("class.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("class.title")}</h2>
-            {canAdminister && (
-              <div className="page-head-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={openCreate}
-                  aria-label={t("class.add")}
-                >
-                  <Plus size={16} />
-                  <span>{t("class.add")}</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <p>{canAdminister ? t("class.intro") : t("class.staff")}</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={t("class.eyebrow")}
+        title={t("class.title")}
+        description={canAdminister ? t("class.intro") : t("class.staff")}
+        actions={
+          canAdminister ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={openCreate}
+              aria-label={t("class.add")}
+            >
+              <Plus size={16} />
+              <span>{t("class.add")}</span>
+            </button>
+          ) : undefined
+        }
+      />
       {open && canAdminister && (
         <section className="panel form-panel">
           <span className="eyebrow">{editing ? t("class.editHead") : t("class.create")}</span>
@@ -4182,11 +5269,11 @@ function ClassesPage({
             </label>
           </div>
           <div className="form-actions">
-            <button className="secondary" onClick={closeForm}>
+            <button className="secondary" onClick={closeForm} disabled={saving}>
               {t("common.cancel")}
             </button>
-            <button className="primary" onClick={saveClass}>
-              {editing ? t("class.save") : t("class.add")}
+            <button className="primary" onClick={() => void saveClass()} disabled={saving}>
+              {saving ? t("common.saving") : editing ? t("class.save") : t("class.add")}
             </button>
           </div>
         </section>
@@ -4223,7 +5310,7 @@ function ClassesPage({
               <button className="secondary" onClick={() => openEdit(selected)}>
                 {t("common.edit")}
               </button>
-              <button className="secondary" onClick={() => removeClass(selected)}>
+              <button className="secondary" disabled={saving} onClick={() => void removeClass(selected)}>
                 {t("class.remove")}
               </button>
             </div>
@@ -4259,16 +5346,6 @@ function ClassesPage({
                       <button type="button" className="text-button" onClick={() => setSelectedId(item.id)}>
                         {t("class.view")}
                       </button>
-                      {canAdminister && (
-                        <>
-                          <button type="button" className="text-button" onClick={() => openEdit(item)}>
-                            {t("common.edit")}
-                          </button>
-                          <button type="button" className="text-button" onClick={() => removeClass(item)}>
-                            {t("common.delete")}
-                          </button>
-                        </>
-                      )}
                     </div>
                   </td>
                 </tr>
@@ -4314,7 +5391,7 @@ function Memberships({
       start_date: string;
       notes: string;
     },
-  ) => void;
+  ) => Promise<boolean> | void;
   onUpdate: (
     id: number,
     payload: {
@@ -4323,9 +5400,9 @@ function Memberships({
       start_date: string;
       notes: string;
     },
-  ) => void;
-  onDelete: (id: number) => void;
-  onSetPaymentStatus: (membership: Membership, status: "paid" | "unpaid") => void;
+  ) => Promise<boolean> | void;
+  onDelete: (id: number) => Promise<boolean> | void;
+  onSetPaymentStatus: (membership: Membership, status: "paid" | "unpaid") => Promise<boolean> | void;
   onPayment: OnPayment;
 }) {
   const { t } = useLang();
@@ -4369,6 +5446,7 @@ function Memberships({
   }, [query, status, paymentFilter, items.length]);
   const pagedItems = visibleItems.slice(0, shown);
   const [renewId, setRenewId] = useState<number | null>(null);
+  const [renewSaving, setRenewSaving] = useState(false);
   const [renewForm, setRenewForm] = useState({
     plan_id: "",
     start_date: new Date().toISOString().slice(0, 10),
@@ -4459,10 +5537,8 @@ function Memberships({
     remove.className = "secondary";
     remove.textContent = t("common.delete");
     remove.onclick = () => {
-      if (window.confirm(t("membership.deleteConfirm"))) {
-        dismissOverlay(overlay);
-        onDelete(item.id);
-      }
+      dismissOverlay(overlay);
+      void onDelete(item.id);
     };
     actions.append(renew, pay, remove);
     panel.append(head, grid, actions);
@@ -4470,29 +5546,35 @@ function Memberships({
     document.body.append(overlay);
   };
 
-  const submitRenew = () => {
-    if (renewId === null || !renewForm.plan_id) return;
-    onRenew(renewId, {
-      member_id: items.find((item) => item.id === renewId)?.member_id || 0,
-      plan_id: Number(renewForm.plan_id),
-      start_date: renewForm.start_date,
-      notes: renewForm.notes,
-    });
-    setRenewId(null);
-    setRenewForm({
-      plan_id: "",
-      start_date: new Date().toISOString().slice(0, 10),
-      notes: t("memberships.renewNote"),
-    });
+  const submitRenew = async () => {
+    if (renewSaving || renewId === null || !renewForm.plan_id) return;
+    setRenewSaving(true);
+    try {
+      const ok = await onRenew(renewId, {
+        member_id: items.find((item) => item.id === renewId)?.member_id || 0,
+        plan_id: Number(renewForm.plan_id),
+        start_date: renewForm.start_date,
+        notes: renewForm.notes,
+      });
+      if (ok === false) return;
+      setRenewId(null);
+      setRenewForm({
+        plan_id: "",
+        start_date: new Date().toISOString().slice(0, 10),
+        notes: t("memberships.renewNote"),
+      });
+    } finally {
+      setRenewSaving(false);
+    }
   };
 
   return (
     <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("memberships.eyebrow")}</span>
-        <h2>{t("memberships.title")}</h2>
-        <p>{t("memberships.intro")}</p>
-      </div>
+      <PageHeader
+        eyebrow={t("memberships.eyebrow")}
+        title={t("memberships.title")}
+        description={t("memberships.intro")}
+      />
       <div className="ledger-stats">
         <button
           type="button"
@@ -4592,11 +5674,11 @@ function Memberships({
             />
           </label>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setRenewId(null)}>
+            <button className="secondary" onClick={() => setRenewId(null)} disabled={renewSaving}>
               {t("common.cancel")}
             </button>
-            <button className="primary" onClick={submitRenew}>
-              {t("memberships.renew")}
+            <button className="primary" onClick={() => void submitRenew()} disabled={renewSaving}>
+              {renewSaving ? t("common.saving") : t("memberships.renew")}
             </button>
           </div>
         </section>
@@ -4684,9 +5766,7 @@ function Memberships({
         </table>
         <LoadMoreBar shown={shown} total={visibleItems.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visibleItems.length && (
-          <div className="empty">
-            {items.length ? t("memberships.emptyFilter") : t("memberships.empty")}
-          </div>
+          <EmptyState title={items.length ? t("memberships.emptyFilter") : t("memberships.empty")} />
         )}
       </section>
     </div>
@@ -4708,7 +5788,7 @@ function Plans({
     price: number | string;
     description: string;
     is_active: boolean;
-  }) => void;
+  }) => Promise<boolean> | void;
   onUpdate: (
     id: number,
     payload: {
@@ -4718,8 +5798,8 @@ function Plans({
       description: string;
       is_active: boolean;
     },
-  ) => void;
-  onDelete: (id: number) => void;
+  ) => Promise<boolean> | void;
+  onDelete: (id: number) => Promise<boolean> | void;
 }) {
   const { t } = useLang();
   const emptyForm = {
@@ -4731,6 +5811,7 @@ function Plans({
   };
   const [form, setForm] = useState(emptyForm);
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = plans.find((item) => item.id === selectedId) || null;
@@ -4770,16 +5851,23 @@ function Plans({
     is_active: form.is_active,
   });
 
-  const savePlan = () => {
-    if (!form.name.trim()) return;
+  const savePlan = async () => {
+    if (saving || !form.name.trim()) return;
     const payload = payloadFromForm();
-    if (editingId) onUpdate(editingId, payload);
-    else onCreate(payload);
-    closeForm();
+    if (!Number.isFinite(Number(payload.price)) || Number(payload.price) < 0) return;
+    if (!Number.isFinite(payload.duration_months) || payload.duration_months < 1) return;
+    setSaving(true);
+    try {
+      const ok = editingId ? await onUpdate(editingId, payload) : await onCreate(payload);
+      if (ok === false) return;
+      closeForm();
+    } finally {
+      setSaving(false);
+    }
   };
 
   const deactivatePlan = (item: Plan) => {
-    onUpdate(item.id, {
+    void onUpdate(item.id, {
       name: item.name,
       duration_months: item.duration_months,
       price: item.price,
@@ -4788,37 +5876,39 @@ function Plans({
     });
   };
 
-  const removePlan = (item: Plan) => {
-    if (!window.confirm(t("plans.confirmDelete"))) return;
-    if (selectedId === item.id) setSelectedId(null);
-    if (editingId === item.id) closeForm();
-    onDelete(item.id);
+  const removePlan = async (item: Plan) => {
+    if (saving || !window.confirm(t("plans.confirmDelete"))) return;
+    setSaving(true);
+    try {
+      const ok = await onDelete(item.id);
+      if (ok === false) return;
+      if (selectedId === item.id) setSelectedId(null);
+      if (editingId === item.id) closeForm();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="content plans-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("plans.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("plans.title")}</h2>
-            {canAdminister && (
-              <div className="page-head-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={openCreate}
-                  aria-label={t("plans.add")}
-                >
-                  <Plus size={16} />
-                  <span>{t("plans.add")}</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <p>{canAdminister ? t("plans.intro") : t("plans.staff")}</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={t("plans.eyebrow")}
+        title={t("plans.title")}
+        description={canAdminister ? t("plans.intro") : t("plans.staff")}
+        actions={
+          canAdminister ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={openCreate}
+              aria-label={t("plans.add")}
+            >
+              <Plus size={16} />
+              <span>{t("plans.add")}</span>
+            </button>
+          ) : undefined
+        }
+      />
       {open && canAdminister && (
         <section className="panel form-panel">
           <span className="eyebrow">{editing ? t("plans.editHead") : t("plans.create")}</span>
@@ -4874,11 +5964,11 @@ function Plans({
             />
           </label>
           <div className="form-actions">
-            <button className="secondary" onClick={closeForm}>
+            <button className="secondary" onClick={closeForm} disabled={saving}>
               {t("common.cancel")}
             </button>
-            <button className="primary" onClick={savePlan}>
-              {editing ? t("plans.save") : t("plans.add")}
+            <button className="primary" onClick={() => void savePlan()} disabled={saving}>
+              {saving ? t("common.saving") : editing ? t("plans.save") : t("plans.add")}
             </button>
           </div>
         </section>
@@ -4981,42 +6071,6 @@ function Plans({
                       >
                         {t("plans.view")}
                       </button>
-                      {canAdminister && (
-                        <>
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openEdit(item);
-                            }}
-                          >
-                            {t("common.edit")}
-                          </button>
-                          {item.is_active && (
-                            <button
-                              type="button"
-                              className="text-button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                deactivatePlan(item);
-                              }}
-                            >
-                              {t("plans.deactivate")}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              removePlan(item);
-                            }}
-                          >
-                            {t("common.delete")}
-                          </button>
-                        </>
-                      )}
                     </div>
                   </td>
                 </tr>
@@ -5084,7 +6138,7 @@ function GymPayments({
     if (payment.member_name) return payment.member_name;
     const membership = membershipById.get(payment.membership_id);
     if (!membership) return `Membership #${payment.membership_id}`;
-    return memberById.get(membership.member_id)?.name || `Member #${membership.member_id}`;
+    return memberById.get(membership.member_id)?.name || t("members.unknown");
   };
 
   const selected = members.find((item) => item.id === selectedId) || null;
@@ -5214,15 +6268,11 @@ function GymPayments({
 
   return (
     <div className="content cash-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("cash.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("cash.title")}</h2>
-          </div>
-          <p>{t("cash.intro")}</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={t("cash.eyebrow")}
+        title={t("cash.title")}
+        description={t("cash.intro")}
+      />
       <form className="desk-search" onSubmit={submitSearch}>
         <div className="search desk-search-field">
           <Search size={18} />
@@ -5341,7 +6391,7 @@ function GymPayments({
           <tbody>
             {owing.slice(0, 12).map((membership) => {
               const member = memberById.get(membership.member_id);
-              const name = member?.name || `Member #${membership.member_id}`;
+              const name = member?.name || t("members.unknown");
               return (
                 <tr className="record-card record-card-owing" key={membership.id}>
                   <td className="record-name" data-label={t("dash.member")}>
@@ -5368,7 +6418,7 @@ function GymPayments({
             })}
           </tbody>
         </table>
-        {!owing.length && <div className="empty">{t("cash.settled")}</div>}
+        {!owing.length && <EmptyState title={t("cash.settled")} />}
       </section>
       {deskError && <div className="error app-banner">{deskError}</div>}
       <section className="panel table-wrap">
@@ -5495,7 +6545,7 @@ function GymPayments({
         </table>
         <LoadMoreBar shown={shown} total={visiblePayments.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
         {!visiblePayments.length && (
-          <div className="empty">{payments.length ? t("cash.emptyFilter") : t("cash.empty")}</div>
+          <EmptyState title={payments.length ? t("cash.emptyFilter") : t("cash.empty")} />
         )}
       </section>
     </div>
@@ -5514,8 +6564,8 @@ function AttendancePage({
   members: Member[];
   memberships: Membership[];
   classes: FitnessClass[];
-  onCheckIn: (id: number) => Promise<void> | void;
-  onCheckOut: (id: number) => Promise<void> | void;
+  onCheckIn: (id: number) => Promise<boolean> | void;
+  onCheckOut: (id: number) => Promise<boolean> | void;
 }) {
   const { t } = useLang();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -5572,7 +6622,7 @@ function AttendancePage({
   const pagedInside = inside.slice(0, shownInside);
   const pagedVisits = records.slice(0, shownVisits);
   const visitName = (item: Attendance) =>
-    item.member_name || memberById.get(item.member_id)?.name || `#${item.member_id}`;
+    item.member_name || memberById.get(item.member_id)?.name || t("members.unknown");
   const checkouts = records.filter((item) => item.checked_out_at).length;
   const headcount = [
     ...classes.map((item) => ({
@@ -5621,14 +6671,16 @@ function AttendancePage({
     can_check_in?: boolean;
   }) => {
     setSelectedId(member.id);
+    let ok = false;
     if (member.is_inside || insideVisit(member.id)) {
-      await onCheckOut(member.id);
+      ok = (await onCheckOut(member.id)) !== false;
     } else if (member.can_check_in !== false && canEnter(member.id)) {
-      await onCheckIn(member.id);
+      ok = (await onCheckIn(member.id)) !== false;
     } else {
       setLookupError(t("att.expired"));
       return;
     }
+    if (!ok) return;
     setQuery("");
     setMatches([]);
     searchRef.current?.focus();
@@ -5674,11 +6726,11 @@ function AttendancePage({
 
   return (
     <div className="content">
-      <div className="page-intro">
-        <span className="eyebrow">{t("att.eyebrow")}</span>
-        <h2>{t("att.title")}</h2>
-        <p>{t("att.intro")}</p>
-      </div>
+      <PageHeader
+        eyebrow={t("att.eyebrow")}
+        title={t("att.title")}
+        description={t("att.intro")}
+      />
       <form className="desk-search" onSubmit={(event) => void submitSearch(event)}>
         <div className="search desk-search-field">
           <Search size={18} />
@@ -5811,7 +6863,7 @@ function AttendancePage({
             </table>
           </>
         ) : (
-          <div className="empty">{t("att.empty")}</div>
+          <EmptyState title={t("att.empty")} />
         )}
       </section>
       <section className="panel table-wrap">
@@ -5877,7 +6929,7 @@ function AttendancePage({
             <LoadMoreBar shown={shownInside} total={inside.length} onMore={() => setShownInside((n) => n + PAGE_SIZE)} />
           </>
         ) : (
-          <div className="empty">{t("att.emptyIn")}</div>
+          <EmptyState title={t("att.emptyIn")} />
         )}
       </section>
       <section className="panel table-wrap">
@@ -5921,7 +6973,7 @@ function AttendancePage({
             <LoadMoreBar shown={shownVisits} total={records.length} onMore={() => setShownVisits((n) => n + PAGE_SIZE)} />
           </>
         ) : (
-          <div className="empty">{t("att.empty")}</div>
+          <EmptyState title={t("att.empty")} />
         )}
       </section>
     </div>
@@ -5945,7 +6997,7 @@ function Trainers({
     monthly_pay?: number | string;
     pay_amount?: number | string;
     is_paid?: boolean;
-  }) => void;
+  }) => Promise<boolean> | void;
   onUpdatePayroll: (
     id: number,
     payload: {
@@ -5954,8 +7006,8 @@ function Trainers({
       pay_amount?: number | string;
       is_paid?: boolean;
     },
-  ) => void;
-  onDelete: (id: number) => void;
+  ) => Promise<boolean> | void;
+  onDelete: (id: number) => Promise<boolean> | void;
 }) {
   const { t } = useLang();
   const now = new Date();
@@ -5964,6 +7016,7 @@ function Trainers({
   const [year, month] = selected.split("-").map(Number);
   const [rows, setRows] = useState<Trainer[]>(trainers);
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     first_name: "",
     last_name: "",
@@ -5973,7 +7026,18 @@ function Trainers({
   });
 
   useEffect(() => {
-    void gymApi.trainers(year, month).then(setRows).catch(() => setRows([]));
+    let cancelled = false;
+    void gymApi
+      .trainers(year, month)
+      .then((rows) => {
+        if (!cancelled) setRows(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setRows([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [year, month, trainers]);
 
   const totals = useMemo(() => {
@@ -5989,23 +7053,31 @@ function Trainers({
     );
   }, [rows]);
 
-  const submit = () => {
-    if (!form.first_name.trim() || !form.last_name.trim()) return;
-    onCreate({
-      first_name: form.first_name.trim(),
-      last_name: form.last_name.trim(),
-      specialization: form.specialization.trim(),
-      phone: form.phone.trim(),
-      monthly_pay: form.monthly_pay === "" ? 0 : Number(form.monthly_pay),
-    });
-    setForm({
-      first_name: "",
-      last_name: "",
-      specialization: "",
-      phone: "",
-      monthly_pay: "",
-    });
-    setOpen(false);
+  const submit = async () => {
+    if (saving || !form.first_name.trim() || !form.last_name.trim()) return;
+    const monthly = form.monthly_pay === "" ? 0 : Number(form.monthly_pay);
+    if (!Number.isFinite(monthly) || monthly < 0) return;
+    setSaving(true);
+    try {
+      const ok = await onCreate({
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim(),
+        specialization: form.specialization.trim(),
+        phone: form.phone.trim(),
+        monthly_pay: monthly,
+      });
+      if (ok === false) return;
+      setForm({
+        first_name: "",
+        last_name: "",
+        specialization: "",
+        phone: "",
+        monthly_pay: "",
+      });
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const recordWork = (trainer: Trainer) => {
@@ -6051,19 +7123,29 @@ function Trainers({
     save.className = "primary";
     save.type = "button";
     save.textContent = t("train.savePay");
-    save.onclick = () => {
+    save.onclick = async () => {
       const [payYear, payMonth] = monthSelect.value.split("-").map(Number);
       const pay =
         payInput.value.trim() === ""
           ? Number(trainer.monthly_pay || 0)
           : Number(payInput.value);
+      if (!Number.isFinite(pay) || pay < 0) return;
+      save.disabled = true;
       setSelected(`${payYear}-${payMonth}`);
-      onUpdatePayroll(trainer.id, {
-        year: payYear,
-        month: payMonth,
-        pay_amount: pay,
-      });
-      dismissOverlay(overlay);
+      try {
+        const ok = await onUpdatePayroll(trainer.id, {
+          year: payYear,
+          month: payMonth,
+          pay_amount: pay,
+        });
+        if (ok === false) {
+          save.disabled = false;
+          return;
+        }
+        dismissOverlay(overlay);
+      } catch {
+        save.disabled = false;
+      }
     };
     actions.append(cancel, save);
     panel.append(label, heading, monthField, payField, actions);
@@ -6074,28 +7156,24 @@ function Trainers({
 
   return (
     <div className="content trainers-page">
-      <div className="page-head">
-        <div className="page-intro">
-          <span className="eyebrow">{t("train.eyebrow")}</span>
-          <div className="page-head-title">
-            <h2>{t("train.title")}</h2>
-            {canAdminister && (
-              <div className="page-head-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => setOpen(true)}
-                  aria-label={t("train.add")}
-                >
-                  <Plus size={16} />
-                  <span>{t("train.add")}</span>
-                </button>
-              </div>
-            )}
-          </div>
-          <p>{t("train.intro")}</p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow={t("train.eyebrow")}
+        title={t("train.title")}
+        description={t("train.intro")}
+        actions={
+          canAdminister ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => setOpen(true)}
+              aria-label={t("train.add")}
+            >
+              <Plus size={16} />
+              <span>{t("train.add")}</span>
+            </button>
+          ) : undefined
+        }
+      />
       <div className="ledger-stats">
         <div className="ledger-stat">
           <span>{t("train.count")}</span>
@@ -6148,7 +7226,7 @@ function Trainers({
             </label>
             <label>
               {t("common.phone")}
-              <input
+              <PhoneField
                 value={form.phone}
                 onChange={(event) => setForm({ ...form, phone: event.target.value })}
               />
@@ -6167,11 +7245,11 @@ function Trainers({
             />
           </label>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setOpen(false)}>
+            <button className="secondary" onClick={() => setOpen(false)} disabled={saving}>
               {t("common.cancel")}
             </button>
-            <button className="primary" onClick={submit}>
-              {t("train.add")}
+            <button className="primary" onClick={() => void submit()} disabled={saving}>
+              {saving ? t("common.saving") : t("train.add")}
             </button>
           </div>
         </section>
@@ -6255,9 +7333,10 @@ function Trainers({
                         <button
                           type="button"
                           className="text-button"
+                          disabled={saving}
                           onClick={() => {
                             if (window.confirm(t("train.confirmDelete", { name: `${trainer.first_name} ${trainer.last_name}` }))) {
-                              onDelete(trainer.id);
+                              void onDelete(trainer.id);
                             }
                           }}
                         >
@@ -6272,9 +7351,7 @@ function Trainers({
           </tbody>
         </table>
         {!rows.length && (
-          <div className="empty">
-            {canAdminister ? t("train.empty") : t("train.none")}
-          </div>
+          <EmptyState title={canAdminister ? t("train.empty") : t("train.none")} />
         )}
       </section>
     </div>
@@ -6343,11 +7420,11 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
   return (
     <div className="content reports-page">
       <div className="reports-top">
-        <div className="page-intro">
-          <span className="eyebrow">{t("rep.eyebrow")}</span>
-          <h2>{t("rep.title")}</h2>
-          <p>{canAdminister ? t("rep.admin") : t("rep.staff")}</p>
-        </div>
+        <PageHeader
+          eyebrow={t("rep.eyebrow")}
+          title={t("rep.title")}
+          description={canAdminister ? t("rep.admin") : t("rep.staff")}
+        />
         {canAdminister && (
           <div className="reports-export">
             <button
@@ -6389,7 +7466,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
           </div>
         </div>
       </div>
-      {error && <div className="error app-banner">{error}</div>}
+      {error && <Alert>{error}</Alert>}
       {canAdminister && (
         <>
           <div className="stats-grid reports-stats">
@@ -6427,7 +7504,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
               <span className="eyebrow">{t("rep.pl")}</span>
               <h3>{overview?.label || t("dash.thisMonth")}</h3>
             </div>
-            {loading && <div className="empty">{t("rep.calc")}</div>}
+            {loading && <LoadingState label={t("rep.calc")} />}
             {!loading && overview && (
               <div className="reports-pl">
                 <div className="reports-pl-group">
@@ -6528,7 +7605,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
                 )}
               </>
             ) : (
-              !loading && <div className="empty">{t("rep.noExp")}</div>
+              !loading && <EmptyState title={t("rep.noExp")} />
             )}
           </section>
         </>
@@ -6570,8 +7647,8 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
           <span className="eyebrow">{t("rep.byClass")}</span>
           <h3>{report?.label || t("rep.breakdown")}</h3>
         </div>
-        {loading && <div className="empty">{t("rep.classCalc")}</div>}
-        {!loading && !rows.length && <div className="empty">{t("rep.noClass")}</div>}
+        {loading && <LoadingState label={t("rep.classCalc")} />}
+        {!loading && !rows.length && <EmptyState title={t("rep.noClass")} />}
         {!loading && rows.length > 0 && (
           <>
             <div className="reports-bars">
@@ -6648,7 +7725,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
             <h3>{payroll?.label || t("rep.payroll")}</h3>
           </div>
           {!loading && !payroll?.trainers.length && (
-            <div className="empty">{t("train.none")}</div>
+            <EmptyState title={t("train.none")} />
           )}
           {!loading && payroll && payroll.trainers.length > 0 && (
             <table className="reports-table">
