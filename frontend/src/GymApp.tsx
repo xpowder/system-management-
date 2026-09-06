@@ -6,6 +6,7 @@ import {
   Bell,
   CalendarCheck,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleDollarSign,
   ClipboardList,
@@ -37,6 +38,7 @@ import {
   type Attendance,
   type ClassRevenueReport,
   type FitnessClass,
+  type DashboardSummary,
   type GymDashboard,
   type GymExpense,
   type GymPayment,
@@ -55,7 +57,7 @@ import {
 import { bookingApi, type AdminUser, type AuthUser } from "./api";
 import { MemberQrScanner } from "./MemberQrScanner";
 import { can, isAdminOnlyNotification, isGymAdmin, isGymDesk } from "./permissions";
-import { clock, date, LanguageSwitch, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
+import { clock, date, LanguageSwitch, localeFor, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
 import { Alert, EmptyState, Field, FieldGrid, FormSection, LoadingState, PageHeader, PhoneField } from "./ui";
 import { ClassCalendar } from "./ClassCalendar";
 import { MemberQrCard } from "./MemberQrCard";
@@ -2022,6 +2024,45 @@ function Notifications({
   )
 }
 
+const GYM_TZ = "Africa/Casablanca";
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function casablancaToday() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: GYM_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function isIsoDate(value: string) {
+  if (!ISO_DATE.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const check = new Date(Date.UTC(year, month - 1, day));
+  return (
+    check.getUTCFullYear() === year &&
+    check.getUTCMonth() === month - 1 &&
+    check.getUTCDate() === day
+  );
+}
+
+function shiftIsoDate(iso: string, days: number) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + days));
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
+}
+
+function formatSummaryDate(iso: string, locale: string) {
+  const [year, month, day] = iso.split("-").map(Number);
+  return new Intl.DateTimeFormat(locale, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year, month - 1, day, 12)));
+}
+
 function Dashboard({
   data,
   members,
@@ -2034,6 +2075,52 @@ function Dashboard({
   go: (page: Page, options?: { status?: string }) => void;
 }) {
   const { t } = useLang();
+  const today = casablancaToday();
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [summaryDate, setSummaryDate] = useState<string | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState("");
+  const summarySeq = useRef(0);
+
+  useEffect(() => {
+    if (!isIsoDate(selectedDate)) return;
+    const requestId = ++summarySeq.current;
+    setSummaryLoading(true);
+    setSummaryError("");
+    void gymApi
+      .dashboardSummary(selectedDate)
+      .then((payload) => {
+        if (requestId !== summarySeq.current) return;
+        setSummary(payload);
+        setSummaryDate(selectedDate);
+      })
+      .catch((e) => {
+        if (requestId !== summarySeq.current) return;
+        setSummaryError(e instanceof Error ? e.message : t("dash.summaryFail"));
+      })
+      .finally(() => {
+        if (requestId === summarySeq.current) setSummaryLoading(false);
+      });
+  }, [selectedDate, t]);
+
+  const visibleSummary = summaryDate === selectedDate ? summary : null;
+  const isToday = selectedDate === today;
+  const dateTitle = isToday
+    ? t("dash.todayLabel", { date: formatSummaryDate(selectedDate, localeFor()) })
+    : t("dash.selectedDate", { date: formatSummaryDate(selectedDate, localeFor()) });
+  const quietDay =
+    visibleSummary &&
+    visibleSummary.attendance.checked_in === 0 &&
+    visibleSummary.attendance.inside === 0 &&
+    Number(visibleSummary.payments.today_total || 0) === 0 &&
+    visibleSummary.classes.today_count === 0;
+
+  const changeDate = (next: string) => {
+    if (!isIsoDate(next) || next === selectedDate) return;
+    setSelectedDate(next);
+  };
+
   return (
     <div className="content dashboard-page">
       <section className="hero-strip">
@@ -2065,47 +2152,136 @@ function Dashboard({
           <p>{t("dash.heroP")}</p>
         </div>
       </section>
-      <div className="stats-grid">
-        <Stat
-          icon={Users}
-          label={t("dash.members")}
-          value={data?.members ?? "—"}
-          detail={t("dash.active", { n: data?.active_members ?? 0 })}
-          className="sage"
-          onClick={() => go("members")}
-        />
-        <Stat
-          icon={CalendarCheck}
-          label={t("dash.expiring")}
-          value={data?.expiring_soon ?? "—"}
-          detail={t("dash.expiringDetail")}
-          className="coral"
-          onClick={() => go("memberships", { status: "expiring_soon" })}
-        />
-        <Stat
-          icon={Activity}
-          label={t("dash.activeMemberships")}
-          value={data?.active_members ?? "—"}
-          detail={t("dash.currentlyActive")}
-          onClick={() => go("memberships", { status: "active" })}
-        />
-        <Stat
-          icon={CircleDollarSign}
-          label={t("dash.cash")}
-          value={data ? money(data.cash_this_month) : "—"}
-          detail={t("dash.thisMonth")}
-          className="gold"
-          onClick={() => go("payments")}
-        />
-        <Stat
-          icon={CircleDollarSign}
-          label={t("dash.outstanding")}
-          value={data ? money(data.outstanding) : "—"}
-          detail={t("dash.across")}
-          className="ink"
-          onClick={() => go("payments")}
-        />
-      </div>
+      <section className="panel dashboard-date-bar">
+        <div>
+          <span className="eyebrow">{t("dash.selectedDateLabel")}</span>
+          <h3>{dateTitle}</h3>
+        </div>
+        <div className="dashboard-date-nav">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => changeDate(shiftIsoDate(selectedDate, -1))}
+            aria-label={t("dash.prevDay")}
+          >
+            <ChevronLeft size={16} />
+            <span>{t("dash.prevDay")}</span>
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={isToday}
+            onClick={() => changeDate(today)}
+          >
+            {t("dash.today")}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => changeDate(shiftIsoDate(selectedDate, 1))}
+            aria-label={t("dash.nextDay")}
+          >
+            <span>{t("dash.nextDay")}</span>
+            <ChevronRight size={16} />
+          </button>
+          <label className="dashboard-date-picker">
+            <span className="sr-only">{t("dash.selectedDateLabel")}</span>
+            <input
+              type="date"
+              value={selectedDate}
+              min="2000-01-01"
+              onChange={(event) => changeDate(event.target.value)}
+            />
+          </label>
+        </div>
+      </section>
+      {summaryError && <Alert onDismiss={() => setSummaryError("")}>{summaryError}</Alert>}
+      {summaryLoading ? (
+        <LoadingState label={t("common.loading")} />
+      ) : visibleSummary ? (
+        <>
+          {quietDay ? <p className="dashboard-quiet">{t("dash.noActivity")}</p> : null}
+          <div className="stats-grid dashboard-summary-grid">
+            <Stat
+              icon={CalendarCheck}
+              label={t("dash.checkedIn")}
+              value={visibleSummary.attendance.checked_in}
+              detail={t("dash.insideNow", { n: visibleSummary.attendance.inside })}
+              className="sage"
+              onClick={() => go("attendance")}
+            />
+            <Stat
+              icon={Activity}
+              label={t("dash.activeMemberships")}
+              value={visibleSummary.memberships.active}
+              detail={t("dash.expiringTodayCount", { n: visibleSummary.memberships.expiring_today })}
+              onClick={() => go("memberships", { status: "active" })}
+            />
+            <Stat
+              icon={ClipboardList}
+              label={t("dash.expiredMemberships")}
+              value={visibleSummary.memberships.expired}
+              detail={t("status.expired")}
+              className="coral"
+              onClick={() => go("memberships", { status: "expired" })}
+            />
+            <Stat
+              icon={CircleDollarSign}
+              label={t("dash.todayPayments")}
+              value={money(visibleSummary.payments.today_total)}
+              detail={t("dash.outstandingBalance")}
+              className="gold"
+              onClick={() => go("payments")}
+            />
+            <Stat
+              icon={CircleDollarSign}
+              label={t("dash.outstandingBalance")}
+              value={money(visibleSummary.payments.outstanding_total)}
+              detail={t("dash.across")}
+              className="ink"
+              onClick={() => go("memberships")}
+            />
+            <Stat
+              icon={Dumbbell}
+              label={t("dash.classesToday")}
+              value={visibleSummary.classes.today_count}
+              detail={t("dash.classesTodayHint")}
+              onClick={() => go("classes")}
+            />
+            <Stat
+              icon={Users}
+              label={t("dash.trainersToday")}
+              value={visibleSummary.trainers.today_count}
+              detail={t("dash.trainersTodayHint")}
+            />
+          </div>
+          <div className="stats-grid dashboard-summary-grid">
+            <Stat
+              icon={CalendarCheck}
+              label={t("dash.expiringToday")}
+              value={visibleSummary.attention.expiring_today}
+              detail={t("dash.attentionExpiringHint")}
+              className="coral"
+              onClick={() => go("reminders")}
+            />
+            <Stat
+              icon={ClipboardList}
+              label={t("dash.expiredMemberships")}
+              value={visibleSummary.attention.expired}
+              detail={t("status.expired")}
+              onClick={() => go("memberships", { status: "expired" })}
+            />
+            <Stat
+              icon={CircleDollarSign}
+              label={t("dash.membersWithBalance")}
+              value={visibleSummary.attention.members_with_balance}
+              detail={t("dash.outstandingBalance")}
+              className="gold"
+              onClick={() => go("memberships")}
+            />
+          </div>
+        </>
+      ) : null}
       {(data?.whatsapp_due ?? 0) > 0 && (
         <section className="panel latest reminder-banner">
           <div className="panel-heading">

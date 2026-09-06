@@ -60,6 +60,16 @@ export interface AttendanceDeskMember {
   checked_in_at?: string | null
 }
 export interface GymDashboard { members: number; active_members: number; expiring_soon: number; cash_this_month: string | number; outstanding: string | number; whatsapp_due?: number; recent_members: Member[] }
+export interface DashboardSummary {
+  date: string
+  timezone: string
+  attendance: { checked_in: number; inside: number }
+  memberships: { active: number; expired: number; expiring_today: number }
+  payments: { today_total: string | number; outstanding_total: string | number }
+  classes: { today_count: number }
+  trainers: { today_count: number }
+  attention: { expiring_today: number; expired: number; members_with_balance: number }
+}
 export interface ClassRevenue {
   id: number | null
   name: string
@@ -402,6 +412,8 @@ async function downloadFile(path: string, fallbackName: string) {
 }
 export const gymApi = {
   dashboard: () => request<GymDashboard>('/fitness/dashboard'),
+  dashboardSummary: (date: string) =>
+    request<DashboardSummary>(`/fitness/dashboard/summary?date=${encodeURIComponent(date)}`),
   classRevenue: (year: number, month: number) => request<ClassRevenueReport>(`/fitness/reports/classes?year=${year}&month=${month}`),
   trainerPayroll: (year: number, month: number) => request<TrainerPayrollReport>(`/fitness/reports/trainers?year=${year}&month=${month}`),
   monthlyOverview: (year: number, month: number) => request<MonthlyOverview>(`/fitness/reports/overview?year=${year}&month=${month}`),
