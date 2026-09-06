@@ -2471,7 +2471,8 @@ html[data-theme="dark"] .ledger-stat.featured{
   .members-page .table-wrap tbody tr.record-card-member,
   .memberships-page .table-wrap tbody tr.record-card-membership,
   .admin-page .table-wrap tbody tr.record-card-user,
-  .trainers-page .table-wrap tbody tr.record-card-trainer{
+  .trainers-page .table-wrap tbody tr.record-card-trainer,
+  .member-360 .table-wrap tbody tr.record-card{
     position:relative;
     z-index:0;
     background:var(--white);
@@ -2506,7 +2507,8 @@ html[data-theme="dark"] .ledger-stat.featured{
   .members-page .table-wrap tbody tr.record-card-member .record-name,
   .memberships-page .table-wrap tbody tr.record-card-membership .record-name,
   .admin-page .table-wrap tbody tr.record-card-user .record-name,
-  .trainers-page .table-wrap tbody tr.record-card-trainer .record-name{
+  .trainers-page .table-wrap tbody tr.record-card-trainer .record-name,
+  .member-360 .table-wrap tbody tr.record-card .record-name{
     border-bottom-color:transparent;
     padding-bottom:6px !important;
   }
@@ -2876,6 +2878,66 @@ html[data-theme="dark"] .ledger-stat.featured{
 html[data-theme="dark"] .membership-details-delete:hover{
   background:rgba(224,106,94,.16);
 }
+.membership-renew-form{
+  display:grid;
+  gap:12px;
+  padding:14px 16px 8px;
+}
+.membership-renew-form label{
+  display:grid;
+  gap:6px;
+  margin:0;
+  color:var(--muted);
+  font-size:12px;
+  font-weight:600;
+}
+.membership-renew-form input,
+.membership-renew-form select{
+  width:100%;
+  min-width:0;
+}
+@media(min-width:621px){
+  .member-details-panel.membership-details-panel{
+    width:min(560px,calc(100vw - 64px));
+    max-width:560px;
+    max-height:min(86vh,720px);
+    padding:0;
+  }
+  .membership-details-head{
+    padding:22px 80px 18px 24px;
+  }
+  .membership-details-head h2{
+    margin:8px 0 10px;
+    font-size:24px;
+  }
+  .membership-details-grid>div{
+    padding:16px 20px;
+  }
+  .membership-details-grid strong{
+    margin-top:6px;
+    font-size:15px;
+  }
+  .membership-renew-form{
+    grid-template-columns:1fr 1fr;
+    gap:16px;
+    padding:20px 24px 12px;
+  }
+  .membership-renew-form label:last-child{
+    grid-column:1/-1;
+  }
+  .membership-renew-form input,
+  .membership-renew-form select{
+    min-height:44px;
+  }
+  .membership-details-actions{
+    padding:16px 24px;
+  }
+  .membership-details-actions .primary,
+  .membership-details-actions .secondary{
+    min-height:42px;
+    padding:0 16px;
+  }
+}
 @media(max-width:620px){
   .member-details-overlay:has(.membership-details-panel){
     padding:12px;
@@ -2927,6 +2989,13 @@ html[data-theme="dark"] .membership-details-delete:hover{
     height:36px;
     padding:0 8px;
     font-size:12px;
+  }
+  .member-details-panel.membership-details-panel.is-renew{
+    max-height:min(86vh,560px);
+  }
+  .membership-renew-form{
+    gap:10px;
+    padding:12px 14px 6px;
   }
 }
 .notification-item,
@@ -3288,68 +3357,90 @@ input.phone-input{
 .reports-top .page-intro{
   margin:0;
 }
-.pay-panel h3{
-  margin:6px 0 14px;
+.pay-panel .panel-heading{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+}
+.pay-panel .panel-heading h3{
+  margin:6px 0 0;
   word-break:break-word;
 }
-.pay-summary{
-  display:grid;
-  gap:8px;
-  margin:0 0 16px;
-  padding:14px;
-  border:1px solid var(--line);
-  border-radius:var(--radius-sm,8px);
-  background:var(--paper);
-}
-.pay-summary .eyebrow{margin:0}
-.pay-summary-plan{
-  font-size:16px;
-  letter-spacing:-.2px;
-}
-.pay-summary p{
+.pay-panel .pay-summary{
   display:flex;
-  justify-content:space-between;
+  flex-direction:column;
+  gap:0;
+  margin:4px 0 10px;
+  padding:0;
+  border:0;
+  background:transparent;
+}
+.pay-panel .pay-summary p{
+  display:flex;
   align-items:baseline;
+  justify-content:space-between;
   gap:12px;
   margin:0;
-  padding:0 !important;
+  padding:8px 0 !important;
   border:0 !important;
+  border-top:1px solid var(--line) !important;
+  color:var(--muted);
   font-size:13px;
 }
-.pay-summary p span{
-  color:var(--muted);
-  font-weight:500;
+.pay-panel .pay-summary p:first-child{
+  border-top:0 !important;
+  padding-top:0 !important;
 }
-.pay-summary p.is-remaining strong{color:var(--warning,#c9892b)}
-.pay-summary p.is-settled strong{color:var(--success,#3d7a52)}
+.pay-panel .pay-summary span{
+  flex:none;
+  font-size:11px;
+  font-weight:700;
+}
+.pay-panel .pay-summary strong{
+  flex:1;
+  min-width:0;
+  text-align:right;
+  font-size:13px;
+  font-weight:700;
+  color:var(--ink);
+  word-break:break-word;
+}
+.pay-panel .pay-summary p.is-remaining strong{color:var(--warning,#c9892b)}
+.pay-panel .pay-summary p.is-settled strong{color:var(--success,#3d7a52)}
+.pay-settled-note{
+  margin:0 !important;
+  padding:10px 0 0 !important;
+  border:0 !important;
+  color:var(--success,#3d7a52);
+  font-size:13px;
+  font-weight:600;
+  line-height:1.4;
+}
 .pay-remaining-btn{
-  margin:0 0 12px;
-  min-height:36px;
-  height:36px;
-  padding:0 10px;
+  margin:0 0 4px;
+  min-height:32px;
+  height:32px;
+  padding:0 4px;
+  align-self:flex-start;
 }
 .pay-panel .field-hint{
   word-break:break-word;
 }
 .pay-panel .form-actions{
   flex-wrap:wrap;
+  margin-top:8px;
 }
 @media(max-width:620px){
-  .pay-panel{
-    width:min(360px,calc(100vw - 24px));
+  .member-details-panel.pay-panel{
+    width:min(300px,calc(100vw - 24px));
+    max-height:min(78vh,460px);
   }
-  .pay-panel .field input,
-  .pay-panel .primary,
-  .pay-panel .secondary{
-    min-height:44px;
-    width:100%;
-  }
-  .pay-panel .form-actions{
-    flex-direction:column-reverse;
-  }
-  .pay-remaining-btn{
-    width:100%;
-    justify-content:center;
+  .pay-panel .form-actions .primary,
+  .pay-panel .form-actions .secondary{
+    min-height:36px;
+    height:36px;
+    flex:1 1 120px;
   }
 }
 .record-remain{
@@ -3563,13 +3654,45 @@ input.phone-input{
   -webkit-box-orient:vertical;
 }
 .member-360-back{
+  display:inline-flex;
+  align-items:center;
+  gap:2px;
   justify-self:start;
   width:max-content;
-  min-height:36px;
-  padding:0;
+  height:32px;
+  min-height:32px;
+  margin:0 0 2px;
+  padding:0 12px 0 8px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  background:var(--white);
   color:var(--muted);
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.01em;
+  box-shadow:0 1px 2px rgba(20,32,36,.04);
+  transition:color .15s ease,border-color .15s ease,background-color .15s ease,box-shadow .15s ease;
 }
-.member-360-back:hover{color:var(--ink)}
+.member-360-back svg{
+  flex:none;
+  margin-left:-2px;
+}
+.member-360-back:hover{
+  color:var(--ink);
+  border-color:color-mix(in srgb,var(--ink) 18%,var(--line));
+  background:var(--hover);
+  box-shadow:0 4px 10px rgba(20,32,36,.06);
+}
+.member-360-back:active{
+  transform:translateY(1px);
+}
+html[data-theme="dark"] .member-360-back{
+  background:var(--white);
+  box-shadow:none;
+}
+html[data-theme="dark"] .member-360-back:hover{
+  box-shadow:0 4px 12px rgba(0,0,0,.28);
+}
 .member-360 .page-head-title h2{
   white-space:normal;
 }
@@ -3787,6 +3910,138 @@ html[data-theme="dark"] .member-360-delete:hover{
   .member-360 .page-head-actions .primary span,
   .member-360 .page-head-actions .secondary span{
     display:inline;
+  }
+  .member-360 > .panel.table-wrap .panel-heading{
+    padding:0 2px 10px;
+  }
+  .member-360 .table-wrap tr.record-card-360-membership{
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:8px 12px;
+    padding:14px 16px !important;
+  }
+  .member-360 .table-wrap tr.record-card-360-membership .record-name{
+    grid-column:1;
+    grid-row:1;
+    border-bottom:0;
+    padding-bottom:0 !important;
+    margin:0;
+    align-items:flex-start;
+  }
+  .member-360 .table-wrap tr.record-card-360-membership .record-owing{
+    grid-column:2;
+    grid-row:1;
+    align-items:flex-end;
+    justify-content:flex-start;
+    text-align:right;
+  }
+  .member-360 .table-wrap tr.record-card-360-membership .record-owing::before{display:none !important}
+  .member-360 .table-wrap tr.record-card-360-membership .record-owing strong{
+    font-size:16px;
+    font-variant-numeric:tabular-nums;
+  }
+  .member-360 .table-wrap tr.record-card-360-membership .record-period{
+    grid-column:1;
+    grid-row:2;
+  }
+  .member-360 .table-wrap tr.record-card-360-membership .record-price,
+  .member-360 .table-wrap tr.record-card-360-membership .record-paid,
+  .member-360 .table-wrap tr.record-card-360-membership .record-pay{
+    display:none !important;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment{
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:8px 12px;
+    padding:14px 16px !important;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-name{
+    grid-column:1;
+    grid-row:1;
+    border-bottom:0;
+    padding-bottom:0 !important;
+    margin:0;
+    align-items:flex-start;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-name small{
+    display:-webkit-box;
+    -webkit-line-clamp:2;
+    -webkit-box-orient:vertical;
+    overflow:hidden;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-owing{
+    grid-column:2;
+    grid-row:1;
+    align-items:flex-end;
+    justify-content:flex-start;
+    text-align:right;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-owing::before{display:none !important}
+  .member-360 .table-wrap tr.record-card-360-payment .record-owing strong{
+    font-size:16px;
+    font-variant-numeric:tabular-nums;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-period{
+    grid-column:1;
+    grid-row:2;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-period::before,
+  .member-360 .table-wrap tr.record-card-360-payment .record-pay::before{
+    display:none !important;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-pay{
+    grid-column:2;
+    grid-row:2;
+    flex-direction:row;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:flex-end;
+    gap:6px;
+    text-align:right;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-plan{
+    grid-column:1/-1;
+    grid-row:3;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-paid{
+    display:none !important;
+  }
+  .member-360 .table-wrap tr.record-card-360-payment .record-actions{
+    grid-column:1/-1;
+    grid-row:4;
+    padding-top:8px !important;
+    margin:0;
+    border-top:1px solid var(--line);
+  }
+  .member-360 .table-wrap tr.record-card-360-visit{
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:8px 12px;
+    padding:14px 16px !important;
+  }
+  .member-360 .table-wrap tr.record-card-360-visit .record-name{
+    grid-column:1;
+    grid-row:1;
+    border-bottom:0;
+    padding-bottom:0 !important;
+    margin:0;
+    align-items:flex-start;
+  }
+  .member-360 .table-wrap tr.record-card-360-visit .record-owing{
+    grid-column:2;
+    grid-row:1;
+    align-items:flex-end;
+    justify-content:flex-start;
+    text-align:right;
+  }
+  .member-360 .table-wrap tr.record-card-360-visit .record-owing::before{display:none !important}
+  .member-360 .table-wrap tr.record-card-360-visit .record-owing strong{
+    font-size:16px;
+    font-variant-numeric:tabular-nums;
+  }
+  .member-360 .table-wrap tr.record-card-360-visit .record-period{
+    grid-column:1;
+    grid-row:2;
+  }
+  .member-360 .table-wrap tr.record-card-360-visit .record-pay{
+    display:none !important;
   }
 }
 

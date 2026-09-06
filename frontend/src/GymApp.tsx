@@ -291,16 +291,31 @@ function RecordPaymentOverlay({
       }}
     >
       <section
-        className="member-details-panel form-panel pay-panel"
+        className="member-details-panel form-panel pay-panel admin-account-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="pay-form-title"
       >
-        <span className="eyebrow">{t("pay.record")}</span>
-        <h3 id="pay-form-title">{t("pay.for", { name: memberLabel })}</h3>
-        <div className="pay-summary">
-          <span className="eyebrow">{t("pay.membership")}</span>
-          <strong className="pay-summary-plan">{planName || t("members.noPlan")}</strong>
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">{t("pay.record")}</span>
+            <h3 id="pay-form-title">{memberLabel}</h3>
+          </div>
+          <button
+            type="button"
+            className="membership-details-x"
+            aria-label={t("common.close")}
+            disabled={saving}
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="info-list pay-summary">
+          <p>
+            <span>{t("pay.membership")}</span>
+            <strong>{planName || t("members.noPlan")}</strong>
+          </p>
           <p>
             <span>{t("pay.price")}</span>
             <strong>{money(membership.price)}</strong>
@@ -320,7 +335,7 @@ function RecordPaymentOverlay({
           </Alert>
         ) : null}
         {settled ? (
-          <Alert tone="success">{t("pay.settled")}</Alert>
+          <p className="pay-settled-note">{t("pay.settled")}</p>
         ) : (
           <>
             <Field
@@ -374,18 +389,16 @@ function RecordPaymentOverlay({
                 onChange={(event) => setNotes(event.target.value)}
               />
             </Field>
+            <div className="form-actions">
+              <button type="button" className="secondary" disabled={saving} onClick={onClose}>
+                {t("common.cancel")}
+              </button>
+              <button type="button" className="primary" disabled={saving} onClick={() => void submit()}>
+                {saving ? t("common.saving") : t("pay.save")}
+              </button>
+            </div>
           </>
         )}
-        <div className="form-actions">
-          <button type="button" className="secondary" disabled={saving} onClick={onClose}>
-            {t("common.cancel")}
-          </button>
-          {settled ? null : (
-            <button type="button" className="primary" disabled={saving} onClick={() => void submit()}>
-              {saving ? t("common.saving") : t("pay.save")}
-            </button>
-          )}
-        </div>
       </section>
     </div>,
     document.body,
@@ -4656,8 +4669,9 @@ function Member360Page({
           </div>,
           document.body,
         )}
-      <button type="button" className="text-button member-360-back" onClick={onBack}>
-        {t("m360.back")}
+      <button type="button" className="member-360-back" onClick={onBack}>
+        <ChevronLeft size={16} strokeWidth={2.25} />
+        <span>{t("nav.members")}</span>
       </button>
       <PageHeader
         eyebrow={`${t("m360.eyebrow")} · ${memberRef}`}
@@ -4783,8 +4797,7 @@ function Member360Page({
             <thead>
               <tr>
                 <th>{t("memberships.plan")}</th>
-                <th>{t("members.startDate")}</th>
-                <th>{t("remind.ends")}</th>
+                <th>{t("memberships.period")}</th>
                 <th>{t("members.price")}</th>
                 <th>{t("members.paidCol")}</th>
                 <th>{t("members.stillOwes")}</th>
@@ -4796,14 +4809,16 @@ function Member360Page({
                 const remaining = Number(item.remaining_balance || 0);
                 const current = isCurrentMembershipStatus(item.status);
                 return (
-                  <tr className="record-card" key={item.id}>
+                  <tr className="record-card record-card-membership record-card-360-membership" key={item.id}>
                     <td className="record-name" data-label={t("memberships.plan")}>
                       <strong>{item.plan.name}</strong>
                       {current ? <span className="eyebrow">{t("m360.current")}</span> : null}
                       {item.status === "active" ? null : <Badge value={item.status} />}
                     </td>
-                    <td data-label={t("members.startDate")}>{date(item.start_date)}</td>
-                    <td data-label={t("remind.ends")}>{date(item.end_date)}</td>
+                    <td className="record-period" data-label={t("memberships.period")}>
+                      {date(item.start_date)}
+                      <small>{t("memberships.to", { date: date(item.end_date) })}</small>
+                    </td>
                     <td className="record-price" data-label={t("members.price")}>{money(item.price)}</td>
                     <td className="record-paid" data-label={t("members.paidCol")}>{money(item.total_paid)}</td>
                     <td className="record-owing table-money" data-label={t("members.stillOwes")}>
@@ -4834,12 +4849,11 @@ function Member360Page({
             <thead>
               <tr>
                 <th>{t("cash.receipt")}</th>
-                <th>{t("memberships.plan")}</th>
                 <th>{t("cash.date")}</th>
-                <th>{t("cash.receivedBy")}</th>
+                <th>{t("common.amount")}</th>
                 <th>{t("cash.method")}</th>
-                <th>{t("members.paidCol")}</th>
-                <th>{t("members.stillOwes")}</th>
+                <th>{t("memberships.plan")}</th>
+                <th>{t("cash.receivedBy")}</th>
                 <th>{t("common.actions")}</th>
               </tr>
             </thead>
@@ -4847,26 +4861,32 @@ function Member360Page({
               {data.payments.map((payment) => {
                 const remaining = payment.remaining_balance == null ? null : Number(payment.remaining_balance);
                 return (
-                  <tr className="record-card" key={payment.id}>
+                  <tr className="record-card record-card-payment record-card-360-payment" key={payment.id}>
                     <td className="record-name" data-label={t("cash.receipt")}>
                       <strong>{payment.receipt_number || t("cash.receipt")}</strong>
-                      {payment.notes ? <span className="record-remain">{payment.notes}</span> : null}
+                      {payment.notes ? <small>{payment.notes}</small> : null}
+                    </td>
+                    <td className="record-period" data-label={t("cash.date")}>
+                      {date(payment.received_at)}
+                      <small>{clock(payment.received_at)}</small>
+                    </td>
+                    <td className="record-owing table-money" data-label={t("common.amount")}>
+                      <strong>{money(payment.amount)}</strong>
+                    </td>
+                    <td className="record-pay" data-label={t("cash.method")}>
+                      {remaining == null ? null : remaining > 0 ? (
+                        <span className="amount-owing">{money(remaining)}</span>
+                      ) : (
+                        <span className="amount-settled">{t("members.settled")}</span>
+                      )}
+                      {" "}
+                      {payment.payment_method === "cash" ? t("cash.cash") : payment.payment_method || "—"}
                     </td>
                     <td className="record-plan" data-label={t("memberships.plan")}>
                       {paymentByMembership.get(payment.membership_id) || t("m360.membershipRef", { id: payment.membership_id })}
                     </td>
-                    <td data-label={t("cash.date")}>{`${date(payment.received_at)} · ${clock(payment.received_at)}`}</td>
-                    <td data-label={t("cash.receivedBy")}>{payment.received_by || "—"}</td>
-                    <td data-label={t("cash.method")}>
-                      {payment.payment_method === "cash" ? t("cash.cash") : payment.payment_method || "—"}
-                    </td>
-                    <td className="record-paid" data-label={t("members.paidCol")}>{money(payment.amount)}</td>
-                    <td className="record-owing table-money" data-label={t("members.stillOwes")}>
-                      {remaining == null ? "—" : (
-                        <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
-                          {remaining > 0 ? money(remaining) : t("members.settled")}
-                        </strong>
-                      )}
+                    <td className={`record-paid${payment.received_by ? "" : " is-empty"}`} data-label={t("cash.receivedBy")}>
+                      {payment.received_by || "—"}
                     </td>
                     <td className="record-actions" data-label={t("common.actions")}>
                       <div className="table-actions">
@@ -4913,30 +4933,32 @@ function Member360Page({
             <thead>
               <tr>
                 <th>{t("cal.date")}</th>
-                <th>{t("members.class")}</th>
-                <th>{t("att.inAt")}</th>
-                <th>{t("att.outAt")}</th>
                 <th>{t("m360.duration")}</th>
+                <th>{t("att.inAt")}</th>
                 <th>{t("common.status")}</th>
               </tr>
             </thead>
             <tbody>
               {data.attendance.map((visit) => (
-                <tr className="record-card" key={visit.id}>
+                <tr className="record-card record-card-360-visit" key={visit.id}>
                   <td className="record-name" data-label={t("cal.date")}>
                     <strong>{date(visit.checked_in_at)}</strong>
+                    <small>{visit.class_name || t("att.noClass")}</small>
                   </td>
-                  <td className="record-plan" data-label={t("members.class")}>
-                    {visit.class_name || t("att.noClass")}
+                  <td className="record-owing" data-label={t("m360.duration")}>
+                    <strong>{visitDurationLabel(visit.checked_in_at, visit.checked_out_at, t) || "—"}</strong>
                   </td>
-                  <td data-label={t("att.inAt")}>{clock(visit.checked_in_at)}</td>
-                  <td data-label={t("att.outAt")}>
-                    {visit.checked_out_at ? clock(visit.checked_out_at) : visit.is_inside ? t("m360.stillInside") : "—"}
+                  <td className="record-period" data-label={t("att.inAt")}>
+                    {clock(visit.checked_in_at)}
+                    <small>
+                      {visit.checked_out_at
+                        ? clock(visit.checked_out_at)
+                        : visit.is_inside
+                          ? t("m360.stillInside")
+                          : "—"}
+                    </small>
                   </td>
-                  <td data-label={t("m360.duration")}>
-                    {visitDurationLabel(visit.checked_in_at, visit.checked_out_at, t) || "—"}
-                  </td>
-                  <td data-label={t("common.status")}>
+                  <td className="record-pay" data-label={t("common.status")}>
                     {visit.is_inside ? <Badge value="active" /> : t("m360.left")}
                   </td>
                 </tr>
@@ -5988,7 +6010,8 @@ function Memberships({
     setShown(PAGE_SIZE);
   }, [query, status, paymentFilter, items.length]);
   const pagedItems = visibleItems.slice(0, shown);
-  const [renewId, setRenewId] = useState<number | null>(null);
+  const [selectedMembership, setSelectedMembership] = useState<Membership | null>(null);
+  const [membershipView, setMembershipView] = useState<"details" | "renew" | "confirmDelete">("details");
   const [renewSaving, setRenewSaving] = useState(false);
   const [renewForm, setRenewForm] = useState({
     plan_id: "",
@@ -5996,8 +6019,26 @@ function Memberships({
     notes: t("memberships.renewNote"),
   });
 
+  useEffect(() => {
+    if (!selectedMembership) return;
+    const latest = items.find((item) => item.id === selectedMembership.id);
+    if (latest && latest !== selectedMembership) setSelectedMembership(latest);
+  }, [items, selectedMembership]);
+
+  const closeMembershipPanel = () => {
+    if (renewSaving) return;
+    setSelectedMembership(null);
+    setMembershipView("details");
+  };
+
+  const showMembershipDetails = (item: Membership) => {
+    setSelectedMembership(item);
+    setMembershipView("details");
+  };
+
   const openRenew = (item: Membership) => {
-    setRenewId(item.id);
+    setSelectedMembership(item);
+    setMembershipView("renew");
     setRenewForm({
       plan_id: String(item.plan_id),
       start_date: item.end_date,
@@ -6005,145 +6046,19 @@ function Memberships({
     });
   };
 
-  const showMembershipDetails = (item: Membership) => {
-    document.querySelector(".member-details-overlay")?.remove();
-    const overlay = document.createElement("div");
-    overlay.className = "member-details-overlay";
-    overlay.onclick = (event) => {
-      if (event.target === overlay) dismissOverlay(overlay);
-    };
-    const panel = document.createElement("section");
-    panel.className = "member-details-panel membership-details-panel";
-
-    const head = document.createElement("div");
-    head.className = "membership-details-head";
-    const label = document.createElement("span");
-    label.className = "eyebrow";
-    label.textContent = t("membership.details");
-    const tools = document.createElement("div");
-    tools.className = "membership-details-tools";
-    const remove = document.createElement("button");
-    remove.className = "membership-details-delete";
-    remove.type = "button";
-    remove.setAttribute("aria-label", t("common.delete"));
-    remove.title = t("common.delete");
-    remove.innerHTML =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>';
-    remove.onclick = () => {
-      panel.className = "member-details-panel form-panel is-confirm";
-      panel.setAttribute("role", "dialog");
-      panel.setAttribute("aria-modal", "true");
-      panel.setAttribute("aria-labelledby", "membership-delete-title");
-      panel.replaceChildren();
-      const eyebrow = document.createElement("span");
-      eyebrow.className = "eyebrow";
-      eyebrow.textContent = t("common.delete");
-      const title = document.createElement("h3");
-      title.id = "membership-delete-title";
-      title.textContent = t("membership.deleteTitle");
-      const copy = document.createElement("p");
-      copy.className = "member-delete-copy";
-      copy.textContent = t("membership.deleteHint");
-      const name = document.createElement("p");
-      name.className = "member-delete-name";
-      name.textContent = memberName(item.member_id);
-      const confirmActions = document.createElement("div");
-      confirmActions.className = "form-actions";
-      const cancel = document.createElement("button");
-      cancel.className = "secondary";
-      cancel.type = "button";
-      cancel.textContent = t("common.cancel");
-      cancel.onclick = () => showMembershipDetails(item);
-      const confirm = document.createElement("button");
-      confirm.className = "danger";
-      confirm.type = "button";
-      confirm.textContent = t("common.delete");
-      confirm.onclick = () => {
-        confirm.disabled = true;
-        cancel.disabled = true;
-        void Promise.resolve(onDelete(item.id, { confirmed: true })).then((ok) => {
-          if (ok !== false) dismissOverlay(overlay);
-          else showMembershipDetails(item);
-        });
-      };
-      confirmActions.append(cancel, confirm);
-      panel.append(eyebrow, title, copy, name, confirmActions);
-    };
-    const close = document.createElement("button");
-    close.className = "membership-details-x";
-    close.type = "button";
-    close.setAttribute("aria-label", t("common.close"));
-    close.textContent = "×";
-    close.onclick = () => dismissOverlay(overlay);
-    tools.append(remove, close);
-    const heading = document.createElement("h2");
-    heading.textContent = memberName(item.member_id);
-    const badges = document.createElement("div");
-    badges.className = "membership-details-badges";
-    const statusBadge = document.createElement("span");
-    statusBadge.className = `status ${item.status}`;
-    statusBadge.textContent = statusLabel(item.status);
-    const paymentBadge = document.createElement("span");
-    paymentBadge.className = `status payment ${item.payment_status}`;
-    paymentBadge.textContent = statusLabel(item.payment_status);
-    badges.append(statusBadge, paymentBadge);
-    head.append(label, tools, heading, badges);
-
-    const grid = document.createElement("div");
-    grid.className = "membership-details-grid";
-    const fields = [
-      [t("memberships.plan"), planName(item.plan_id)],
-      [t("members.price"), money(item.price)],
-      [t("members.startDate"), date(item.start_date)],
-      [t("remind.ends"), date(item.end_date)],
-      [t("members.paidCol"), money(item.total_paid)],
-      [t("members.stillOwes"), money(item.remaining_balance)],
-    ];
-    fields.forEach(([key, value]) => {
-      const cell = document.createElement("div");
-      if (key === t("members.stillOwes") && Number(item.remaining_balance) > 0) cell.className = "remaining";
-      const caption = document.createElement("span");
-      caption.textContent = key;
-      const strong = document.createElement("strong");
-      strong.textContent = value;
-      cell.append(caption, strong);
-      grid.append(cell);
-    });
-
-    const actions = document.createElement("div");
-    actions.className = "form-actions membership-details-actions";
-    const renew = document.createElement("button");
-    renew.className = "primary";
-    renew.textContent = t("memberships.renew");
-    renew.onclick = () => {
-      dismissOverlay(overlay);
-      openRenew(item);
-    };
-    const pay = document.createElement("button");
-    pay.className = "secondary";
-    pay.textContent = t("pay.record");
-    pay.onclick = () => {
-      dismissOverlay(overlay);
-      addPayment(item);
-    };
-    actions.append(renew, pay);
-    panel.append(head, grid, actions);
-    overlay.append(panel);
-    document.body.append(overlay);
-  };
-
   const submitRenew = async () => {
-    if (renewSaving || renewId === null || !renewForm.plan_id) return;
+    if (renewSaving || !selectedMembership || !renewForm.plan_id) return;
     setRenewSaving(true);
     try {
-      const ok = await onRenew(renewId, {
-        member_id: items.find((item) => item.id === renewId)?.member_id || 0,
+      const ok = await onRenew(selectedMembership.id, {
+        member_id: selectedMembership.member_id,
         plan_id: Number(renewForm.plan_id),
         start_date: renewForm.start_date,
         notes: renewForm.notes,
       });
       if (ok === false) return;
-      setRenewId(null);
+      setSelectedMembership(null);
+      setMembershipView("details");
       setRenewForm({
         plan_id: "",
         start_date: new Date().toISOString().slice(0, 10),
@@ -6165,6 +6080,212 @@ function Memberships({
           onPayment={onPayment}
         />
       ) : null}
+      {selectedMembership
+        ? createPortal(
+            <div
+              className="member-details-overlay"
+              onClick={(event) => {
+                if (event.target === event.currentTarget && !renewSaving) closeMembershipPanel();
+              }}
+            >
+              {membershipView === "confirmDelete" ? (
+                <section
+                  className="member-details-panel form-panel is-confirm"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="membership-delete-title"
+                >
+                  <span className="eyebrow">{t("common.delete")}</span>
+                  <h3 id="membership-delete-title">{t("membership.deleteTitle")}</h3>
+                  <p className="member-delete-copy">{t("membership.deleteHint")}</p>
+                  <p className="member-delete-name">{memberName(selectedMembership.member_id)}</p>
+                  <div className="form-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={renewSaving}
+                      onClick={() => setMembershipView("details")}
+                    >
+                      {t("common.cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={renewSaving}
+                      onClick={() => {
+                        setRenewSaving(true);
+                        void Promise.resolve(onDelete(selectedMembership.id, { confirmed: true })).then((ok) => {
+                          setRenewSaving(false);
+                          if (ok !== false) closeMembershipPanel();
+                          else setMembershipView("details");
+                        });
+                      }}
+                    >
+                      {t("common.delete")}
+                    </button>
+                  </div>
+                </section>
+              ) : (
+                <section
+                  className={`member-details-panel membership-details-panel${membershipView === "renew" ? " is-renew" : ""}`}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="membership-details-title"
+                >
+                  <div className="membership-details-head">
+                    <span className="eyebrow">
+                      {membershipView === "renew" ? t("memberships.renew") : t("membership.details")}
+                    </span>
+                    <div className="membership-details-tools">
+                      {membershipView === "details" ? (
+                        <button
+                          type="button"
+                          className="membership-details-delete"
+                          aria-label={t("common.delete")}
+                          title={t("common.delete")}
+                          disabled={renewSaving}
+                          onClick={() => setMembershipView("confirmDelete")}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="membership-details-x"
+                        aria-label={t("common.close")}
+                        disabled={renewSaving}
+                        onClick={closeMembershipPanel}
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                    <h2 id="membership-details-title">{memberName(selectedMembership.member_id)}</h2>
+                    {membershipView === "details" ? (
+                      <div className="membership-details-badges">
+                        <Badge value={selectedMembership.status} />
+                        <Badge value={selectedMembership.payment_status} payment />
+                      </div>
+                    ) : null}
+                  </div>
+                  {membershipView === "renew" ? (
+                    <div className="membership-renew-form">
+                      <label>
+                        {t("memberships.plan")}
+                        <select
+                          value={renewForm.plan_id}
+                          disabled={renewSaving}
+                          onChange={(event) =>
+                            setRenewForm({ ...renewForm, plan_id: event.target.value })
+                          }
+                        >
+                          <option value="">{t("members.selectPlan")}</option>
+                          {selectablePlans(plans, renewForm.plan_id).map((plan) => (
+                            <option key={plan.id} value={plan.id}>
+                              {plan.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        {t("memberships.renewFrom")}
+                        <input
+                          type="date"
+                          value={renewForm.start_date}
+                          disabled={renewSaving}
+                          onChange={(event) =>
+                            setRenewForm({ ...renewForm, start_date: event.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        {t("common.notes")}
+                        <input
+                          value={renewForm.notes}
+                          disabled={renewSaving}
+                          onChange={(event) =>
+                            setRenewForm({ ...renewForm, notes: event.target.value })
+                          }
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="membership-details-grid">
+                      <div>
+                        <span>{t("memberships.plan")}</span>
+                        <strong>{planName(selectedMembership.plan_id)}</strong>
+                      </div>
+                      <div>
+                        <span>{t("members.price")}</span>
+                        <strong>{money(selectedMembership.price)}</strong>
+                      </div>
+                      <div>
+                        <span>{t("members.startDate")}</span>
+                        <strong>{date(selectedMembership.start_date)}</strong>
+                      </div>
+                      <div>
+                        <span>{t("remind.ends")}</span>
+                        <strong>{date(selectedMembership.end_date)}</strong>
+                      </div>
+                      <div>
+                        <span>{t("members.paidCol")}</span>
+                        <strong>{money(selectedMembership.total_paid)}</strong>
+                      </div>
+                      <div className={Number(selectedMembership.remaining_balance) > 0 ? "remaining" : undefined}>
+                        <span>{t("members.stillOwes")}</span>
+                        <strong>{money(selectedMembership.remaining_balance)}</strong>
+                      </div>
+                    </div>
+                  )}
+                  <div className="form-actions membership-details-actions">
+                    {membershipView === "renew" ? (
+                      <>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={renewSaving}
+                          onClick={() => setMembershipView("details")}
+                        >
+                          {t("common.cancel")}
+                        </button>
+                        <button
+                          type="button"
+                          className="primary"
+                          disabled={renewSaving || !renewForm.plan_id}
+                          onClick={() => void submitRenew()}
+                        >
+                          {renewSaving ? t("common.saving") : t("memberships.renew")}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="primary"
+                          disabled={renewSaving}
+                          onClick={() => openRenew(selectedMembership)}
+                        >
+                          {t("memberships.renew")}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={renewSaving}
+                          onClick={() => {
+                            closeMembershipPanel();
+                            addPayment(selectedMembership);
+                          }}
+                        >
+                          {t("pay.record")}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </section>
+              )}
+            </div>,
+            document.body,
+          )
+        : null}
       <PageHeader
         eyebrow={t("memberships.eyebrow")}
         title={t("memberships.title")}
@@ -6228,56 +6349,6 @@ function Memberships({
           <option value="cancelled">{t("status.cancelled")}</option>
         </select>
       </div>
-      {renewId !== null && (
-        <section className="panel form-panel">
-          <span className="eyebrow">{t("memberships.renew")}</span>
-          <div className="date-fields">
-            <label>
-              {t("memberships.plan")}
-              <select
-                value={renewForm.plan_id}
-                onChange={(event) =>
-                  setRenewForm({ ...renewForm, plan_id: event.target.value })
-                }
-              >
-                <option value="">{t("members.selectPlan")}</option>
-                {selectablePlans(plans, renewForm.plan_id).map((plan) => (
-                  <option key={plan.id} value={plan.id}>
-                    {plan.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              {t("memberships.renewFrom")}
-              <input
-                type="date"
-                value={renewForm.start_date}
-                onChange={(event) =>
-                  setRenewForm({ ...renewForm, start_date: event.target.value })
-                }
-              />
-            </label>
-          </div>
-          <label>
-            {t("common.notes")}
-            <input
-              value={renewForm.notes}
-              onChange={(event) =>
-                setRenewForm({ ...renewForm, notes: event.target.value })
-              }
-            />
-          </label>
-          <div className="form-actions">
-            <button className="secondary" onClick={() => setRenewId(null)} disabled={renewSaving}>
-              {t("common.cancel")}
-            </button>
-            <button className="primary" onClick={() => void submitRenew()} disabled={renewSaving}>
-              {renewSaving ? t("common.saving") : t("memberships.renew")}
-            </button>
-          </div>
-        </section>
-      )}
       <section className="panel table-wrap">
         <table>
           <thead>
