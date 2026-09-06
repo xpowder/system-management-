@@ -3950,3 +3950,55 @@ html[data-theme="dark"] .class-calendar-cell.is-today{
   }
   .qr-scanner-result .info-list{grid-template-columns:1fr}
 }
+
+.member-qr-card{
+  display:grid;
+  grid-template-columns:140px minmax(0,1fr);
+  gap:18px;
+  align-items:center;
+}
+.member-qr-card .desk-qr{
+  width:140px;
+  height:140px;
+  justify-self:start;
+}
+.member-qr-card-copy p{
+  margin:0 0 12px;
+  color:var(--muted);
+}
+.member-qr-card-copy small{
+  display:block;
+  margin-top:8px;
+  color:var(--muted);
+}
+.member-qr-card.is-compact{
+  grid-template-columns:120px minmax(0,1fr);
+  gap:12px;
+}
+.member-qr-card.is-compact .desk-qr{
+  width:120px;
+  height:120px;
+}
+.desk-card .member-qr-card.is-compact{
+  justify-self:end;
+  max-width:360px;
+}
+.member-360 .member-qr-card-panel{
+  padding:20px 22px;
+}
+@media(max-width:620px){
+  .member-qr-card,
+  .member-qr-card.is-compact{
+    grid-template-columns:1fr;
+  }
+  .member-qr-card .form-actions{
+    display:grid;
+    grid-template-columns:1fr;
+  }
+  .member-qr-card .form-actions .secondary,
+  .member-qr-card .form-actions .whatsapp-button{
+    width:100%;
+    justify-content:center;
+    min-height:44px;
+  }
+}

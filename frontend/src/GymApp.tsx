@@ -58,6 +58,7 @@ import { can, isAdminOnlyNotification, isGymAdmin, isGymDesk } from "./permissio
 import { clock, date, LanguageSwitch, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
 import { Alert, EmptyState, Field, FieldGrid, FormSection, LoadingState, PageHeader, PhoneField } from "./ui";
 import { ClassCalendar } from "./ClassCalendar";
+import { MemberQrCard } from "./MemberQrCard";
 import { ThemeSwitch } from "./theme";
 import { playNotificationSound, unlockNotificationSound } from "./notificationSound";
 import "./App.css";
@@ -4061,6 +4062,7 @@ function Member360Page({
   const [data, setData] = useState<Member360 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [notFound, setNotFound] = useState(false);
   const [editing, setEditing] = useState(false);
   const loadSeq = useRef(0);
@@ -4241,6 +4243,7 @@ function Member360Page({
         actions={memberActions}
       />
       {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
+      {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       {loading && <LoadingState label={t("common.loading")} />}
 
       <div className="ledger-stats member-360-kpis">
@@ -4330,6 +4333,18 @@ function Member360Page({
           </p>
         </div>
       </section>
+
+      {member.is_active ? (
+        <section className="panel form-panel member-qr-card-panel">
+          <MemberQrCard
+            memberId={member.id}
+            memberName={member.name}
+            phone={member.phone}
+            onError={setError}
+            onNotice={setNotice}
+          />
+        </section>
+      ) : null}
 
       <section className="panel table-wrap">
         <div className="panel-heading">
@@ -6986,10 +7001,12 @@ function AttendancePage({
               )}
             </div>
           </div>
-          <img
-            className="desk-qr"
-            src={gymApi.memberQrUrl(selected.id)}
-            alt={t("att.qr")}
+          <MemberQrCard
+            memberId={selected.id}
+            memberName={selected.name}
+            phone={selected.phone}
+            compact
+            onError={setLookupError}
           />
         </section>
       )}

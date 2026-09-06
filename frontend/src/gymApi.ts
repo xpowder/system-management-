@@ -312,6 +312,7 @@ function downloadMime(name: string, type: string) {
   if (type && !type.includes('text/html') && !type.includes('application/json')) return type
   if (name.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   if (name.endsWith('.pdf')) return 'application/pdf'
+  if (name.endsWith('.png')) return 'image/png'
   return type || 'application/octet-stream'
 }
 
@@ -502,6 +503,8 @@ export const gymApi = {
   memberQrLookup: (token: string) =>
     request<MemberQrLookup>(`/fitness/members/qr/${encodeURIComponent(token)}`),
   memberQrUrl: (id: number) => `${base}/fitness/members/${id}/qr`,
+  downloadMemberQr: (id: number) =>
+    downloadFile(`/fitness/members/${id}/qr.png`, `FO-${String(id).padStart(6, '0')}-qr.png`),
   trainers: (year?: number, month?: number) => request<Trainer[]>(`/fitness/trainers${year && month ? `?year=${year}&month=${month}` : ''}`),
   createTrainer: (payload: { first_name: string; last_name: string; specialization?: string; phone?: string; monthly_pay?: number | string; pay_amount?: number | string; is_paid?: boolean }) => request<Trainer>('/fitness/trainers', { method: 'POST', body: JSON.stringify(payload) }),
   updateTrainerPayroll: (id: number, payload: { year?: number; month?: number; pay_amount?: number | string; is_paid?: boolean }) => request<Trainer>(`/fitness/trainers/${id}/payroll`, { method: 'PATCH', body: JSON.stringify(payload) }),
