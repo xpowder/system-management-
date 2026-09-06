@@ -24,11 +24,16 @@ export default function App() {
 		if (user) resetSessionExpiredNotice()
 	}, [user])
 	useEffect(() => { bookingApi.me().then(setUser).catch(() => undefined).finally(() => setBusy(false)) }, [])
+	useEffect(() => {
+		if (!error) return
+		const timer = window.setTimeout(() => setError(''), 5000)
+		return () => window.clearTimeout(timer)
+	}, [error])
 	if (busy) {
 		return (
 			<div className="auth-page">
 				<section className="auth-card auth-loading-card">
-					<span className="brand-mark">F</span>
+					<span className="brand-mark">A</span>
 					<h1>{t('auth.loading')}</h1>
 					<div className="auth-spinner" aria-hidden="true" />
 				</section>
@@ -56,9 +61,9 @@ export default function App() {
 		<div className="auth-page">
 			<section className="auth-card">
 				<div className="auth-brand">
-					<span className="brand-mark">F</span>
+					<span className="brand-mark">A</span>
 					<div>
-						<strong>FlexOper</strong>
+						<strong>AUMB</strong>
 						<small>{t('brand.tag')}</small>
 					</div>
 				</div>

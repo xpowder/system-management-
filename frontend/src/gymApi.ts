@@ -519,6 +519,7 @@ export const gymApi = {
     downloadFile(`/fitness/members/${id}/qr.png`, `FO-${String(id).padStart(6, '0')}-qr.png`),
   trainers: (year?: number, month?: number) => request<Trainer[]>(`/fitness/trainers${year && month ? `?year=${year}&month=${month}` : ''}`),
   createTrainer: (payload: { first_name: string; last_name: string; specialization?: string; phone?: string; monthly_pay?: number | string; pay_amount?: number | string; is_paid?: boolean }) => request<Trainer>('/fitness/trainers', { method: 'POST', body: JSON.stringify(payload) }),
+  updateTrainer: (id: number, payload: { first_name: string; last_name: string; specialization?: string; phone?: string; monthly_pay?: number | string }) => request<Trainer>(`/fitness/trainers/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   updateTrainerPayroll: (id: number, payload: { year?: number; month?: number; pay_amount?: number | string; is_paid?: boolean }) => request<Trainer>(`/fitness/trainers/${id}/payroll`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteTrainer: (id: number) => request<{ success: boolean }>(`/fitness/trainers/${id}`, { method: 'DELETE' }),
   notificationSettings: () => request<NotificationSettings>('/notifications/settings'),

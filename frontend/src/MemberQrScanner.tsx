@@ -2,9 +2,83 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CalendarCheck, LogOut, QrCode, X } from "lucide-react";
 import { Html5Qrcode } from "html5-qrcode";
-import { gymApi, httpStatus, type MemberQrLookup } from "./gymApi";
-import { useLang } from "./i18n";
+import { gymApi, httpStatus, type MemberQrLookup, type Membership } from "./gymApi";
+import { useLang, type Msg } from "./i18n";
 import { Alert, EmptyState, LoadingState } from "./ui";
+
+type MonthPhase = "continuing" | "ending" | "ended" | "upcoming" | "none";
+
+type ScanMembership = {
+  status: string;
+  start_date: string;
+  end_date: string;
+};
+
+function pickMembership(items: Array<ScanMembership>): ScanMembership | null {
+  if (!items.length) return null;
+  return (
+    items.find((item) => item.status === "active" || item.status === "expiring_soon") ??
+    [...items].sort((a, b) => b.end_date.localeCompare(a.end_date))[0]
+  );
+}
+
+function parseDay(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function daysUntil(endDate: string) {
+  const end = parseDay(endDate);
+  if (!end) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((end.getTime() - today.getTime()) / 86400000);
+}
+
+function monthPhase(membership: ScanMembership | null): MonthPhase {
+  if (!membership) return "none";
+  const days = daysUntil(membership.end_date);
+  if (membership.status === "upcoming") return "upcoming";
+  if (membership.status === "expired" || membership.status === "cancelled" || membership.status === "suspended" || days < 0) {
+    return "ended";
+  }
+  if (membership.status === "expiring_soon" || days <= 7) return "ending";
+  return "continuing";
+}
+
+function remainLabel(
+  membership: ScanMembership,
+  t: (key: Msg, vars?: Record<string, string | number>) => string,
+) {
+  const days = daysUntil(membership.end_date);
+  if (membership.status === "expired" || days < 0) return t("members.expiredLabel");
+  if (days === 0) return t("members.endsToday");
+  if (days === 1) return t("members.endsTomorrow");
+  if (days <= 7) return t("members.endsIn", { n: days });
+  return t(days === 1 ? "remind.daysLeft" : "remind.daysLeftPlural", { n: days });
+}
+
+function formatDay(value: string, lang: string) {
+  const date = parseDay(value);
+  if (!date) return value.slice(0, 10);
+  return date.toLocaleDateString(lang === "fr" ? "fr-FR" : "en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+const monthTitle: Record<MonthPhase, Msg> = {
+  continuing: "qr.monthContinuing",
+  ending: "qr.monthEndingSoon",
+  ended: "qr.monthEnded",
+  upcoming: "qr.monthUpcoming",
+  none: "qr.noMembership",
+};
 
 type ScanPhase = "starting" | "scanning" | "lookup" | "result" | "missing" | "camera" | "failed";
 
@@ -21,6 +95,7 @@ function extractQrToken(raw: string) {
 }
 
 export function MemberQrScanner({
+  memberships,
   isInside,
   canCheckIn,
   onCheckIn,
@@ -28,6 +103,7 @@ export function MemberQrScanner({
   onOpenProfile,
   onClose,
 }: {
+  memberships: Membership[];
   isInside: (memberId: number) => boolean;
   canCheckIn: (memberId: number) => boolean;
   onCheckIn: (memberId: number) => Promise<boolean> | void;
@@ -35,9 +111,11 @@ export function MemberQrScanner({
   onOpenProfile: (memberId: number) => void;
   onClose: () => void;
 }) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const tRef = useRef(t);
   tRef.current = t;
+  const membershipsRef = useRef(memberships);
+  membershipsRef.current = memberships;
   const readerId = "member-qr-reader";
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const busyRef = useRef(false);
@@ -47,6 +125,7 @@ export function MemberQrScanner({
   const [error, setError] = useState("");
   const [cameraMissing, setCameraMissing] = useState(false);
   const [member, setMember] = useState<MemberQrLookup | null>(null);
+  const [membership, setMembership] = useState<ScanMembership | null>(null);
   const [acting, setActing] = useState(false);
 
   const stopScanner = () => {
@@ -86,6 +165,7 @@ export function MemberQrScanner({
     busyRef.current = false;
     setError("");
     setMember(null);
+    setMembership(null);
     setCameraMissing(false);
     setPhase("starting");
 
@@ -101,7 +181,19 @@ export function MemberQrScanner({
         try {
           const found = await gymApi.memberQrLookup(token);
           if (cancelled) return;
+          let current = pickMembership(
+            membershipsRef.current.filter((item) => item.member_id === found.member_id),
+          );
+          try {
+            const profile = await gymApi.member360(found.member_id);
+            if (cancelled) return;
+            current = pickMembership(profile.memberships) ?? current;
+          } catch {
+            /* keep the membership already loaded at the desk */
+          }
+          if (cancelled) return;
           setMember(found);
+          setMembership(current);
           setError("");
           setPhase("result");
         } catch (e) {
@@ -163,6 +255,7 @@ export function MemberQrScanner({
     busyRef.current = false;
     setError("");
     setMember(null);
+    setMembership(null);
     setCameraMissing(false);
     setPhase("starting");
     setSession((value) => value + 1);
@@ -183,7 +276,9 @@ export function MemberQrScanner({
 
   const idle = phase === "result" || phase === "missing" || phase === "camera" || phase === "failed";
   const inside = member ? isInside(member.member_id) : false;
-  const allowed = member ? canCheckIn(member.member_id) : false;
+  const month = monthPhase(membership);
+  const monthOpen = month === "continuing" || month === "ending";
+  const allowed = member ? (membership ? monthOpen : canCheckIn(member.member_id)) : false;
 
   return createPortal(
     <div
@@ -231,6 +326,21 @@ export function MemberQrScanner({
           <article className="qr-scanner-result">
             <span className="eyebrow">{t("qr.member")}</span>
             <h3>{member.name}</h3>
+            <div className={`qr-month-status is-${month}`} role="status">
+              <strong>{t(monthTitle[month])}</strong>
+              {membership ? (
+                <span>
+                  {month === "upcoming"
+                    ? t("qr.startsOn", { date: formatDay(membership.start_date, lang) })
+                    : month === "ended"
+                      ? t("qr.endedOn", { date: formatDay(membership.end_date, lang) })
+                      : t("qr.endsOn", { date: formatDay(membership.end_date, lang) })}
+                  {month !== "upcoming" ? ` · ${remainLabel(membership, t)}` : ""}
+                </span>
+              ) : (
+                <span>{t("qr.noMembershipHint")}</span>
+              )}
+            </div>
             <div className="info-list">
               <p>
                 <span>{t("qr.memberId")}</span>
@@ -272,6 +382,9 @@ export function MemberQrScanner({
               </button>
             </div>
             {!member.is_active ? <p className="field-hint">{t("qr.inactiveHint")}</p> : null}
+            {member.is_active && !inside && !allowed ? (
+              <p className="field-hint">{month === "none" ? t("qr.noMembershipHint") : t("att.expired")}</p>
+            ) : null}
           </article>
         ) : null}
 

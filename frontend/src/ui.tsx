@@ -1,4 +1,6 @@
-import type { InputHTMLAttributes, ReactNode } from "react";
+import { useEffect, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+
+const BANNER_HIDE_MS = 5000;
 
 export function PageHeader({
   eyebrow,
@@ -36,6 +38,14 @@ export function Alert({
   onDismiss?: () => void;
   dismissLabel?: string;
 }) {
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+  useEffect(() => {
+    if (!dismissRef.current) return;
+    const timer = window.setTimeout(() => dismissRef.current?.(), BANNER_HIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [children]);
+
   return (
     <div className={`app-alert app-alert-${tone} app-banner`} role="status">
       <p>{children}</p>
@@ -79,7 +89,7 @@ export function Field({
   children: ReactNode;
 }) {
   return (
-    <label className={`field${wide ? " field-wide" : ""} ${className}`.trim()} htmlFor={htmlFor}>
+    <label className={`field${wide ? " field-wide" : ""}${error ? " is-invalid" : ""} ${className}`.trim()} htmlFor={htmlFor}>
       <span className="field-label">{label}</span>
       {children}
       {hint ? <small className="field-hint">{hint}</small> : null}

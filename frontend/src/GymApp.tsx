@@ -27,6 +27,7 @@ import {
   Settings as SettingsIcon,
   Trash2,
   Upload,
+  User,
   UserPlus,
   Users,
   X,
@@ -57,7 +58,7 @@ import {
 import { bookingApi, type AdminUser, type AuthUser } from "./api";
 import { MemberQrScanner } from "./MemberQrScanner";
 import { can, isAdminOnlyNotification, isGymAdmin, isGymDesk } from "./permissions";
-import { clock, date, LanguageSwitch, localeFor, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
+import { clock, date, LanguageSwitch, localeFor, money, monthLabel, statusLabel, todayLabel, useLang, type Msg } from "./i18n";
 import { Alert, EmptyState, Field, FieldGrid, FormSection, LoadingState, PageHeader, PhoneField } from "./ui";
 import { ClassCalendar } from "./ClassCalendar";
 import { MemberQrCard } from "./MemberQrCard";
@@ -107,6 +108,55 @@ function isValidEmail(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return true;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+}
+
+function isValidPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!value.trim()) return true;
+  return digits.length >= 8 && digits.length <= 15;
+}
+
+function isValidIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00`);
+  return !Number.isNaN(date.getTime());
+}
+
+type MemberFormErrors = Partial<Record<keyof MemberFormState, string>>;
+
+function validateMemberForm(
+  form: MemberFormState,
+  mode: "create" | "edit",
+  t: (key: Msg, vars?: Record<string, string | number>) => string,
+  alreadyPaid = 0,
+) {
+  const errors: MemberFormErrors = {};
+  if (!form.first_name.trim()) errors.first_name = t("form.firstNameReq");
+  if (!form.last_name.trim()) errors.last_name = t("form.lastNameReq");
+  if (mode === "create" && !form.id_number.trim()) errors.id_number = t("form.cinReq");
+  if (mode === "create" && !form.address.trim()) errors.address = t("form.addressReq");
+  if (form.email.trim() && !isValidEmail(form.email)) errors.email = t("form.validEmail");
+  if (form.phone.trim() && !isValidPhone(form.phone)) errors.phone = t("form.validPhone");
+  if (form.start_date && !isValidIsoDate(form.start_date)) errors.start_date = t("form.validDate");
+  if (mode === "create") {
+    if (form.amount_paid.trim() !== "") {
+      const paid = Number(form.amount_paid);
+      if (!Number.isFinite(paid) || paid < 0) errors.amount_paid = t("form.validAmount");
+    }
+  } else if (form.price.trim() !== "") {
+    const price = Number(form.price);
+    if (!Number.isFinite(price) || price < 0) errors.price = t("form.validAmount");
+    else if (price < alreadyPaid) errors.price = t("pay.priceBelowPaid");
+  }
+  if (form.remaining.trim() !== "") {
+    const remaining = Number(form.remaining);
+    if (!Number.isFinite(remaining) || remaining < 0) errors.remaining = t("form.validAmount");
+  }
+  const messages = Object.values(errors).filter(Boolean);
+  return {
+    errors,
+    summary: messages.length === 0 ? "" : messages.length === 1 ? messages[0] : t("form.fixFields"),
+  };
 }
 
 function membershipRemainLabel(
@@ -166,94 +216,180 @@ function dismissOverlay(overlay: HTMLElement) {
   window.setTimeout(() => overlay.parentNode?.removeChild(overlay), 200);
 }
 
-function openRecordPaymentForm({
+function paymentAmountText(value: number) {
+  return Number(value || 0).toFixed(2);
+}
+
+function RecordPaymentOverlay({
   memberLabel,
   membership,
+  planName,
   onPayment,
+  onClose,
+  onRefresh,
 }: {
   memberLabel: string;
   membership: Membership;
+  planName?: string;
   onPayment: OnPayment;
+  onClose: () => void;
+  onRefresh?: () => Promise<void> | void;
 }) {
-  document.querySelector(".member-details-overlay")?.remove();
-  const overlay = document.createElement("div");
-  overlay.className = "member-details-overlay";
-  overlay.onclick = (event) => {
-    if (event.target === overlay) dismissOverlay(overlay);
+  const { t } = useLang();
+  const remaining = Number(membership.remaining_balance || 0);
+  const settled = remaining <= 0;
+  const [amount, setAmount] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const amountRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!settled) amountRef.current?.focus();
+  }, [settled]);
+
+  const setAmountSafe = (value: string) => {
+    if (value === "" || /^\d*[.,]?\d{0,2}$/.test(value)) {
+      setAmount(value.replace(",", "."));
+      setError("");
+    }
   };
-  const panel = document.createElement("section");
-  panel.className = "member-details-panel form-panel";
-  const label = document.createElement("span");
-  label.className = "eyebrow";
-  label.textContent = translate("pay.record");
-  const heading = document.createElement("h2");
-  heading.textContent = translate("pay.for", { name: memberLabel });
-  const hint = document.createElement("p");
-  hint.className = "payment-remaining-hint";
-  hint.textContent = translate("pay.hint", { amount: money(membership.remaining_balance) });
-  const row = document.createElement("div");
-  row.className = "date-fields";
-  const amountField = document.createElement("label");
-  amountField.textContent = translate("pay.received");
-  const amountInput = document.createElement("input");
-  amountInput.type = "number";
-  amountInput.min = "0.01";
-  amountInput.step = "0.01";
-  amountInput.placeholder = "100";
-  amountField.append(amountInput);
-  const remainingField = document.createElement("label");
-  remainingField.textContent = translate("pay.owes");
-  const remainingInput = document.createElement("input");
-  remainingInput.type = "number";
-  remainingInput.min = "0";
-  remainingInput.step = "0.01";
-  remainingInput.placeholder = "20";
-  remainingField.append(remainingInput);
-  row.append(amountField, remainingField);
-  const actions = document.createElement("div");
-  actions.className = "form-actions";
-  const cancel = document.createElement("button");
-  cancel.className = "secondary";
-  cancel.type = "button";
-  cancel.textContent = translate("common.cancel");
-  cancel.onclick = () => dismissOverlay(overlay);
-  const save = document.createElement("button");
-  save.className = "primary";
-  save.type = "button";
-  save.textContent = translate("pay.save");
-  save.onclick = async () => {
-    const amount = Number(amountInput.value);
-    const remainingValue = remainingInput.value.trim();
-    const remaining = remainingValue === "" ? undefined : Number(remainingValue);
-    if (!amount || amount <= 0) return;
-    if (remaining === undefined && amount > Number(membership.remaining_balance)) {
-      hint.textContent = translate("pay.over");
+
+  const parsedAmount = Number(amount.replace(",", "."));
+
+  const submit = async () => {
+    if (saving || settled) return;
+    if (!amount.trim() || !Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setError(t("pay.amountPositive"));
       return;
     }
-    if (remaining !== undefined && (!Number.isFinite(remaining) || remaining < 0)) return;
-    save.disabled = true;
+    if (parsedAmount > remaining) {
+      setError(t("pay.exceeds", { amount: money(remaining) }));
+      return;
+    }
+    setError("");
+    setSaving(true);
     try {
       await onPayment(membership.id, {
-        amount,
+        amount: parsedAmount,
         received_by: loggedInStaffName,
-        notes:
-          remaining === undefined
-            ? translate("pay.note")
-            : translate("pay.noteRemain", { n: remaining }),
-        remaining,
+        notes: notes.trim() || t("pay.note"),
       });
-      dismissOverlay(overlay);
+      onClose();
     } catch (e) {
-      save.disabled = false;
-      hint.textContent =
-        e instanceof Error ? e.message : translate("pay.fail");
+      setError(e instanceof Error && e.message && e.message !== "[object Object]" ? e.message : t("pay.fail"));
+      await onRefresh?.();
+      setSaving(false);
     }
   };
-  actions.append(cancel, save);
-  panel.append(label, heading, hint, row, actions);
-  overlay.append(panel);
-  document.body.append(overlay);
-  amountInput.focus();
+
+  return createPortal(
+    <div
+      className="member-details-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !saving) onClose();
+      }}
+    >
+      <section
+        className="member-details-panel form-panel pay-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pay-form-title"
+      >
+        <span className="eyebrow">{t("pay.record")}</span>
+        <h3 id="pay-form-title">{t("pay.for", { name: memberLabel })}</h3>
+        <div className="pay-summary">
+          <span className="eyebrow">{t("pay.membership")}</span>
+          <strong className="pay-summary-plan">{planName || t("members.noPlan")}</strong>
+          <p>
+            <span>{t("pay.price")}</span>
+            <strong>{money(membership.price)}</strong>
+          </p>
+          <p>
+            <span>{t("pay.paid")}</span>
+            <strong>{money(membership.total_paid)}</strong>
+          </p>
+          <p className={settled ? "is-settled" : "is-remaining"}>
+            <span>{t("pay.remaining")}</span>
+            <strong>{settled ? t("members.settled") : money(remaining)}</strong>
+          </p>
+        </div>
+        {error ? (
+          <Alert onDismiss={() => setError("")} dismissLabel={t("common.dismiss")}>
+            {error}
+          </Alert>
+        ) : null}
+        {settled ? (
+          <Alert tone="success">{t("pay.settled")}</Alert>
+        ) : (
+          <>
+            <Field
+              label={t("pay.received")}
+              hint={t("pay.max", { amount: money(remaining) })}
+              htmlFor="pay-amount"
+              error={error || undefined}
+            >
+              <input
+                ref={amountRef}
+                id="pay-amount"
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder={paymentAmountText(remaining)}
+                value={amount}
+                aria-invalid={Boolean(error)}
+                disabled={saving}
+                onChange={(event) => setAmountSafe(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "-" || event.key === "e" || event.key === "E" || event.key === "+") {
+                    event.preventDefault();
+                  }
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+            </Field>
+            {remaining > 0 ? (
+              <button
+                type="button"
+                className="text-button pay-remaining-btn"
+                disabled={saving}
+                onClick={() => {
+                  setAmount(paymentAmountText(remaining));
+                  setError("");
+                }}
+              >
+                {t("pay.payRemaining")}
+              </button>
+            ) : null}
+            <Field label={t("pay.notes")} htmlFor="pay-notes">
+              <input
+                id="pay-notes"
+                value={notes}
+                disabled={saving}
+                maxLength={200}
+                placeholder={t("pay.note")}
+                onChange={(event) => setNotes(event.target.value)}
+              />
+            </Field>
+          </>
+        )}
+        <div className="form-actions">
+          <button type="button" className="secondary" disabled={saving} onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          {settled ? null : (
+            <button type="button" className="primary" disabled={saving} onClick={() => void submit()}>
+              {saving ? t("common.saving") : t("pay.save")}
+            </button>
+          )}
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 type MemberFormState = {
@@ -319,29 +455,38 @@ function MemberRecordFields({
   setForm,
   classes,
   plans,
+  errors = {},
+  onFieldEdit,
 }: {
   mode: "create" | "edit";
   form: MemberFormState;
   setForm: (next: MemberFormState) => void;
   classes: FitnessClass[];
   plans: Plan[];
+  errors?: MemberFormErrors;
+  onFieldEdit?: (field: keyof MemberFormState) => void;
 }) {
   const { t } = useLang();
-  const patch = (partial: Partial<MemberFormState>) => setForm({ ...form, ...partial });
+  const patch = (partial: Partial<MemberFormState>) => {
+    const field = Object.keys(partial)[0] as keyof MemberFormState | undefined;
+    if (field) onFieldEdit?.(field);
+    setForm({ ...form, ...partial });
+  };
   return (
     <>
       <FormSection title={t("form.personal")}>
         <FieldGrid>
-          <Field label={t("common.firstName")}>
-            <input value={form.first_name} onChange={(event) => patch({ first_name: event.target.value })} />
+          <Field label={t("common.firstName")} error={errors.first_name}>
+            <input value={form.first_name} aria-invalid={Boolean(errors.first_name)} onChange={(event) => patch({ first_name: event.target.value })} />
           </Field>
-          <Field label={t("common.lastName")}>
-            <input value={form.last_name} onChange={(event) => patch({ last_name: event.target.value })} />
+          <Field label={t("common.lastName")} error={errors.last_name}>
+            <input value={form.last_name} aria-invalid={Boolean(errors.last_name)} onChange={(event) => patch({ last_name: event.target.value })} />
           </Field>
-          <Field label={t("members.cin")} hint={mode === "create" ? t("members.cinHelp") : undefined}>
+          <Field label={t("members.cin")} hint={mode === "create" ? t("members.cinHelp") : undefined} error={errors.id_number}>
             <input
               value={form.id_number}
               placeholder={t("members.cinPh")}
+              aria-invalid={Boolean(errors.id_number)}
               onChange={(event) => patch({ id_number: event.target.value })}
             />
           </Field>
@@ -352,20 +497,22 @@ function MemberRecordFields({
               onChange={(event) => patch({ city: event.target.value })}
             />
           </Field>
-          <Field label={t("members.address")} wide>
+          <Field label={t("members.address")} wide error={errors.address}>
             <input
               value={form.address}
               placeholder={t("members.addressPh")}
+              aria-invalid={Boolean(errors.address)}
               onChange={(event) => patch({ address: event.target.value })}
             />
           </Field>
-          <Field label={t("common.phone")}>
-            <PhoneField value={form.phone} onChange={(event) => patch({ phone: event.target.value })} />
+          <Field label={t("common.phone")} error={errors.phone}>
+            <PhoneField value={form.phone} aria-invalid={Boolean(errors.phone)} onChange={(event) => patch({ phone: event.target.value })} />
           </Field>
-          <Field label={t("common.email")}>
+          <Field label={t("common.email")} error={errors.email}>
             <input
               type="email"
               value={form.email}
+              aria-invalid={Boolean(errors.email)}
               onChange={(event) => patch({ email: event.target.value })}
             />
           </Field>
@@ -383,8 +530,8 @@ function MemberRecordFields({
               ))}
             </select>
           </Field>
-          <Field label={t("memberships.plan")}>
-            <select value={form.plan_id} onChange={(event) => patch({ plan_id: event.target.value })}>
+          <Field label={t("memberships.plan")} error={errors.plan_id}>
+            <select value={form.plan_id} aria-invalid={Boolean(errors.plan_id)} onChange={(event) => patch({ plan_id: event.target.value })}>
               <option value="">{t("members.selectPlan")}</option>
               {selectablePlans(plans, form.plan_id).map((item) => (
                 <option key={item.id} value={item.id}>
@@ -393,10 +540,11 @@ function MemberRecordFields({
               ))}
             </select>
           </Field>
-          <Field label={t("members.startDate")}>
+          <Field label={t("members.startDate")} error={errors.start_date}>
             <input
               type="date"
               value={form.start_date}
+              aria-invalid={Boolean(errors.start_date)}
               onChange={(event) => patch({ start_date: event.target.value })}
             />
           </Field>
@@ -406,35 +554,38 @@ function MemberRecordFields({
         {mode === "create" ? <p className="form-caption">{t("members.paymentHelp")}</p> : null}
         <FieldGrid>
           {mode === "create" ? (
-            <Field label={t("members.amountPaid")}>
+            <Field label={t("members.amountPaid")} error={errors.amount_paid}>
               <input
                 type="number"
                 min="0"
                 step="0.01"
                 placeholder="100"
                 value={form.amount_paid}
+                aria-invalid={Boolean(errors.amount_paid)}
                 onChange={(event) => patch({ amount_paid: event.target.value })}
               />
             </Field>
           ) : (
-            <Field label={t("members.priceMad")}>
+            <Field label={t("members.priceMad")} error={errors.price}>
               <input
                 type="number"
                 min="0"
                 step="0.01"
                 placeholder="0.00"
                 value={form.price}
+                aria-invalid={Boolean(errors.price)}
                 onChange={(event) => patch({ price: event.target.value })}
               />
             </Field>
           )}
-          <Field label={t("pay.owes")}>
+          <Field label={t("pay.owes")} error={errors.remaining}>
             <input
               type="number"
               min="0"
               step="0.01"
               placeholder="20"
               value={form.remaining}
+              aria-invalid={Boolean(errors.remaining)}
               onChange={(event) => patch({ remaining: event.target.value })}
             />
           </Field>
@@ -463,6 +614,7 @@ function EditMemberOverlay({
   const [form, setForm] = useState(() => memberFormValues(member, currentMembership, plans));
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<MemberFormErrors>({});
 
   useEffect(() => {
     void gymApi.memberClass(member.id).then((memberClass) => {
@@ -474,12 +626,10 @@ function EditMemberOverlay({
 
   const save = async () => {
     if (saving) return;
-    if (!form.first_name.trim() || !form.last_name.trim()) {
-      setFormError(t("admin.nameReq"));
-      return;
-    }
-    if (form.email.trim() && !isValidEmail(form.email)) {
-      setFormError(t("form.validEmail"));
+    const checked = validateMemberForm(form, "edit", t, Number(currentMembership?.total_paid || 0));
+    if (checked.summary) {
+      setFieldErrors(checked.errors);
+      setFormError(checked.summary);
       return;
     }
     const priceValue = form.price.trim();
@@ -490,6 +640,7 @@ function EditMemberOverlay({
     const planId = form.plan_id ? Number(form.plan_id) : currentMembership?.plan_id || (plans[0] ? plans[0].id : undefined);
     const startDate = form.start_date || currentMembership?.start_date.slice(0, 10) || new Date().toISOString().slice(0, 10);
     setFormError("");
+    setFieldErrors({});
     setSaving(true);
     try {
       const ok = await onUpdate(member.id, {
@@ -531,8 +682,23 @@ function EditMemberOverlay({
     >
       <section className="member-details-panel form-panel member-form is-wide">
         <span className="eyebrow">{t("members.editHead")}</span>
-        <MemberRecordFields mode="edit" form={form} setForm={setForm} classes={classes} plans={plans} />
-        {formError ? <Alert>{formError}</Alert> : null}
+        <MemberRecordFields
+          mode="edit"
+          form={form}
+          setForm={setForm}
+          classes={classes}
+          plans={plans}
+          errors={fieldErrors}
+          onFieldEdit={(field) => {
+            setFieldErrors((current) => {
+              if (!current[field]) return current;
+              const next = { ...current };
+              delete next[field];
+              return next;
+            });
+          }}
+        />
+        {formError ? <Alert onDismiss={() => setFormError("")}>{formError}</Alert> : null}
         <div className="form-actions">
           <button type="button" className="secondary" onClick={onClose} disabled={saving}>
             {t("common.cancel")}
@@ -1365,6 +1531,12 @@ export default function GymApp({
         );
       }
       if (payload.membership && Number.isFinite(nextPrice) && nextPrice >= 0) {
+        const paidSoFar = Number(
+          memberships.find((item) => item.id === payload.membership?.id)?.total_paid || 0,
+        );
+        if (nextPrice < paidSoFar) {
+          throw new Error(t("pay.priceBelowPaid"));
+        }
         const updated = await gymApi.updateMembershipPrice(payload.membership.id, nextPrice);
         setMemberships((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
@@ -1390,8 +1562,8 @@ export default function GymApp({
     }, t("member.updateFail"));
   };
 
-  const deleteMember = async (memberId: number) => {
-    if (!window.confirm(t("member.deleteConfirm"))) return false;
+  const deleteMember = async (memberId: number, options?: { confirmed?: boolean }) => {
+    if (!options?.confirmed && !window.confirm(t("member.deleteConfirm"))) return false;
     return mutate(async () => {
       await gymApi.deleteMember(memberId);
       afterSave(t("member.deleted"));
@@ -1483,6 +1655,22 @@ export default function GymApp({
     }, t("train.fail"));
   };
 
+  const updateTrainer = async (
+    id: number,
+    payload: {
+      first_name: string;
+      last_name: string;
+      specialization?: string;
+      phone?: string;
+      monthly_pay?: number | string;
+    },
+  ) => {
+    return mutate(async () => {
+      await gymApi.updateTrainer(id, payload);
+      afterSave(t("train.updated"));
+    }, t("train.updateProfileFail"));
+  };
+
   const updateTrainerPayroll = async (
     id: number,
     payload: {
@@ -1535,8 +1723,8 @@ export default function GymApp({
     }, t("membership.updateFail"));
   };
 
-  const deleteMembership = async (membershipId: number) => {
-    if (!window.confirm(t("membership.deleteConfirm"))) return false;
+  const deleteMembership = async (membershipId: number, options?: { confirmed?: boolean }) => {
+    if (!options?.confirmed && !window.confirm(t("membership.deleteConfirm"))) return false;
     return mutate(async () => {
       await gymApi.deleteMembership(membershipId);
       afterSave(t("membership.deleted"));
@@ -1562,7 +1750,8 @@ export default function GymApp({
       afterSave(t("pay.ok"));
       return payment;
     } catch (e) {
-      setError(e instanceof Error ? e.message : t("pay.fail"));
+      setError(e instanceof Error && e.message && e.message !== "[object Object]" ? e.message : t("pay.fail"));
+      void load({ quiet: true });
       throw e;
     } finally {
       savingRef.current = false;
@@ -1626,9 +1815,9 @@ export default function GymApp({
       )}
       <aside className={`sidebar ${mobileMenuOpen ? "mobile-open" : ""}`}>
         <div className="brand">
-          <span className="brand-mark">F</span>
+          <span className="brand-mark">A</span>
           <div>
-            <strong>FlexOper</strong>
+            <strong>AUMB</strong>
             <small>{t("brand.tag")}</small>
           </div>
         </div>
@@ -1734,8 +1923,6 @@ export default function GymApp({
                               <button type="button" className="icon-button" aria-label={t("common.refresh")} onClick={() => void load()}>
                                 <RefreshCw size={16} />
                               </button>
-                              <LanguageSwitch />
-                              <ThemeSwitch />
                             </div>
                             <button type="button" className="notification-action notification-action-wide" onClick={() => { setNotificationsOpen(false); go("notifications") }}>
                               <Bell size={16} /> {t("notif.viewAll")}
@@ -1782,12 +1969,9 @@ export default function GymApp({
         {busy && <LoadingState label={t("common.loading")} />}
         {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
         {error && (
-          <div className="error app-banner">
-            <p>{error}</p>
-            <button type="button" className="icon-button" onClick={() => setError("")} aria-label={t("common.dismiss")}>
-              <X size={15} />
-            </button>
-          </div>
+          <Alert onDismiss={() => setError("")} dismissLabel={t("common.dismiss")}>
+            {error}
+          </Alert>
         )}
         <div className={`page-stage${page === "dashboard" ? " overview-enter" : ""}`} key={canUseDesk ? page : "denied"}>
         {!canUseDesk ? (
@@ -1812,10 +1996,8 @@ export default function GymApp({
             classes={classes}
             plans={plans}
             memberships={memberships}
-            onCheckIn={checkIn}
             onCreate={createMember}
             onUpdate={updateMember}
-            onPayment={recordPayment}
             onOpenProfile={openMember360}
           />
         )}
@@ -1898,6 +2080,7 @@ export default function GymApp({
             trainers={trainers}
             canAdminister={canAdminister}
             onCreate={createTrainer}
+            onUpdate={updateTrainer}
             onUpdatePayroll={updateTrainerPayroll}
             onDelete={deleteTrainer}
           />
@@ -1924,6 +2107,7 @@ export default function GymApp({
             notifications={visibleNotifications}
             error={notificationsError}
             busy={notificationsBusy}
+            onDismissError={() => setNotificationsError("")}
             onOpen={openNotification}
             onDelete={id => void deleteNotification(id)}
             onMarkAllRead={() => void markAllNotificationsRead()}
@@ -1946,6 +2130,7 @@ function Notifications({
   onDelete,
   onMarkAllRead,
   onDeleteAll,
+  onDismissError,
 }: {
   notifications: GymNotification[]
   error?: string
@@ -1954,6 +2139,7 @@ function Notifications({
   onDelete: (id: number) => void
   onMarkAllRead: () => void
   onDeleteAll: () => void
+  onDismissError?: () => void
 }) {
   const { t } = useLang()
   const [filter, setFilter] = useState('all')
@@ -1991,7 +2177,7 @@ function Notifications({
           </>
         }
       />
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert onDismiss={onDismissError}>{error}</Alert>}
       <div className="notification-filters">
         {['all', 'unread', 'memberships', 'payments', 'members', 'system'].map(value => (
           <button
@@ -2523,7 +2709,7 @@ function RemindersPage() {
         title={t("remind.title")}
         description={t("remind.intro")}
       />
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       <div className="ledger-stats">
         <button type="button" className={`ledger-stat ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>
@@ -2925,7 +3111,7 @@ function ExpensesPage() {
           </select>
         </label>
       </div>
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       <div className="stats-grid reports-stats">
         <Stat
@@ -3150,6 +3336,7 @@ function Administration({
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [accountError, setAccountError] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState(false);
 
   useEffect(() => {
     setProfile({
@@ -3262,24 +3449,31 @@ function Administration({
     try {
       await bookingApi.updateAdminUser(user.id, { is_active: !user.is_active });
       setNotice(user.is_active ? t("admin.deactivated") : t("admin.activated"));
-      setUsers(await bookingApi.adminUsers(query));
+      const rows = await bookingApi.adminUsers(query);
+      setUsers(rows);
+      setSelectedUser((current) =>
+        current?.id === user.id ? rows.find((row) => row.id === user.id) ?? { ...user, is_active: !user.is_active } : current,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : t("admin.updateFail"));
     } finally {
       setSaving(false);
     }
   };
-  const remove = async (user: AdminUser) => {
-    if (saving || !canManageStaffAccount(user)) return;
-    if (!window.confirm(t("admin.deleteConfirm", { name: user.username }))) return;
+  const remove = async (user: AdminUser, options?: { confirmed?: boolean }) => {
+    if (saving || !canManageStaffAccount(user)) return false;
+    if (!options?.confirmed) return false;
     setSaving(true);
     try {
       await bookingApi.deleteAdminUser(user.id);
       setNotice(t("admin.deleted"));
+      setConfirmDeleteUser(false);
       setSelectedUser((current) => (current?.id === user.id ? null : current));
       setUsers(await bookingApi.adminUsers(query));
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : t("admin.deleteFail"));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -3401,6 +3595,7 @@ function Administration({
               onClick={() => setAccountOpen(true)}
               aria-label={t("admin.account")}
             >
+              <User size={16} />
               <span>{t("admin.account")}</span>
             </button>
             <button
@@ -3415,7 +3610,7 @@ function Administration({
           </>
         }
       />
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
       {notice && <Toast message={notice} onDismiss={() => setNotice("")} />}
       <section className="admin-overview">
         <div className="admin-overview-head">
@@ -3511,7 +3706,7 @@ function Administration({
       )}
       {accountOpen && (
       <div className="member-details-overlay">
-      <section className="panel form-panel member-details-panel">
+      <section className="panel form-panel member-details-panel admin-account-panel">
         <div className="panel-heading">
           <div>
             <span className="eyebrow">{t("form.account")}</span>
@@ -3519,7 +3714,7 @@ function Administration({
             <p>{t("admin.accountIntro")}</p>
           </div>
         </div>
-        {accountError && <Alert>{accountError}</Alert>}
+        {accountError && <Alert onDismiss={() => setAccountError("")}>{accountError}</Alert>}
         <FormSection title={t("form.personal")}>
           <FieldGrid>
             <Field label={t("admin.first")}>
@@ -3625,14 +3820,35 @@ function Administration({
         </div>
       </div>
       {selectedUser && (
-        <div className="member-details-overlay">
-        <section className="panel member-details-panel admin-user-details">
+        <div className="member-details-overlay" onClick={(event) => { if (event.target === event.currentTarget && !saving) { setSelectedUser(null); setConfirmDeleteUser(false); } }}>
+        <section className="panel member-details-panel admin-user-details admin-account-panel">
           <div className="panel-heading">
             <div>
               <span className="eyebrow">{t("admin.details")}</span>
               <h3>{selectedUser.first_name} {selectedUser.last_name}</h3>
             </div>
-            <Badge value={selectedUser.is_active ? "active" : "inactive"} />
+            <div className="admin-user-heading-actions">
+              <Badge value={selectedUser.is_active ? "active" : "inactive"} />
+              {canManageStaffAccount(selectedUser) && (
+                <button
+                  type="button"
+                  className="membership-details-delete"
+                  disabled={saving}
+                  aria-label={t("admin.deleteUser")}
+                  onClick={() => setConfirmDeleteUser(true)}
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+              <button
+                type="button"
+                className="membership-details-x"
+                aria-label={t("common.close")}
+                onClick={() => { setSelectedUser(null); setConfirmDeleteUser(false); }}
+              >
+                <X size={16} />
+              </button>
+            </div>
           </div>
           <div className="info-list">
             <p><span>{t("admin.username")}</span><strong>{selectedUser.username}</strong></p>
@@ -3641,20 +3857,49 @@ function Administration({
             <p><span>{t("admin.lastLogin")}</span><strong>{selectedUser.last_login ? date(selectedUser.last_login) : t("common.never")}</strong></p>
           </div>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setSelectedUser(null)}>{t("common.close")}</button>
             {canManageStaffAccount(selectedUser) && (
               <>
                 <button className="secondary" onClick={() => startEdit(selectedUser)}>{t("admin.editUser")}</button>
-                <button className="primary" disabled={saving} onClick={() => void remove(selectedUser)}>{t("admin.deleteUser")}</button>
+                <button
+                  className={selectedUser.is_active ? "danger" : "secondary"}
+                  disabled={saving}
+                  onClick={() => void toggle(selectedUser)}
+                >
+                  {selectedUser.is_active ? t("admin.deactivate") : t("admin.activate")}
+                </button>
               </>
             )}
           </div>
         </section>
         </div>
       )}
+      {confirmDeleteUser && selectedUser && createPortal(
+        <div
+          className="member-details-overlay"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !saving) setConfirmDeleteUser(false);
+          }}
+        >
+          <section className="member-details-panel form-panel is-confirm" role="dialog" aria-modal="true" aria-labelledby="admin-delete-title">
+            <span className="eyebrow">{t("common.delete")}</span>
+            <h3 id="admin-delete-title">{t("admin.deleteSure")}</h3>
+            <p className="member-delete-copy">{t("admin.deleteConfirm", { name: selectedUser.username })}</p>
+            <p className="member-delete-name">{selectedUser.first_name} {selectedUser.last_name}</p>
+            <div className="form-actions">
+              <button type="button" className="secondary" disabled={saving} onClick={() => setConfirmDeleteUser(false)}>
+                {t("common.cancel")}
+              </button>
+              <button type="button" className="danger" disabled={saving} onClick={() => void remove(selectedUser, { confirmed: true })}>
+                {saving ? t("common.saving") : t("common.delete")}
+              </button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
       {open && (
         <div className="member-details-overlay">
-        <section className="panel form-panel member-details-panel">
+        <section className="panel form-panel member-details-panel admin-account-panel">
           <span className="eyebrow">{editing ? t("admin.edit") : t("admin.new")}</span>
           <FormSection title={t("form.personal")}>
             <FieldGrid>
@@ -3793,7 +4038,6 @@ function Administration({
               <th>{t("admin.role")}</th>
               <th>{t("common.status")}</th>
               <th>{t("admin.lastLogin")}</th>
-              <th>{t("common.actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -3801,9 +4045,7 @@ function Administration({
               <tr
                 className="record-card record-card-user"
                 key={user.id}
-                onClick={(event) => {
-                  if (!(event.target as HTMLElement).closest("button")) setSelectedUser(user);
-                }}
+                onClick={() => { setConfirmDeleteUser(false); setSelectedUser(user); }}
               >
                 <td className="record-name" data-label={t("admin.user")}>
                   <strong>
@@ -3819,46 +4061,6 @@ function Administration({
                 </td>
                 <td className="record-period" data-label={t("admin.lastLogin")}>
                   {user.last_login ? date(user.last_login) : t("common.never")}
-                </td>
-                <td className="record-actions" data-label={t("common.actions")}>
-                  <div className="table-actions">
-                    {canManageStaffAccount(user) && (
-                    <>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        startEdit(user);
-                      }}
-                    >
-                      {t("common.edit")}
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={saving}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void toggle(user);
-                      }}
-                    >
-                      {user.is_active ? t("admin.deactivate") : t("admin.activate")}
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={saving}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void remove(user);
-                      }}
-                    >
-                      {t("common.delete")}
-                    </button>
-                    </>
-                    )}
-                  </div>
                 </td>
               </tr>
             ))}
@@ -4229,7 +4431,7 @@ function Member360Page({
   plans: Plan[];
   onBack: () => void;
   onUpdate: OnMemberUpdate;
-  onDelete: (id: number) => Promise<boolean> | void;
+  onDelete: (id: number, options?: { confirmed?: boolean }) => Promise<boolean> | void;
   onPayment: OnPayment;
   onCheckIn: (id: number) => Promise<boolean> | void;
   onCheckOut: (id: number) => Promise<boolean> | void;
@@ -4241,6 +4443,9 @@ function Member360Page({
   const [notice, setNotice] = useState("");
   const [notFound, setNotFound] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const loadSeq = useRef(0);
 
   const load = async () => {
@@ -4283,15 +4488,7 @@ function Member360Page({
 
   const openPay = () => {
     if (!data || !currentMembership) return;
-    openRecordPaymentForm({
-      memberLabel: data.member.name,
-      membership: membershipFrom360(currentMembership),
-      onPayment: async (membershipId, payload) => {
-        const payment = await onPayment(membershipId, payload);
-        await load();
-        return payment;
-      },
-    });
+    setPaying(true);
   };
 
   const sendReminder = async () => {
@@ -4344,7 +4541,7 @@ function Member360Page({
             </button>
           }
         />
-        {error && <Alert>{error}</Alert>}
+        {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
       </div>
     );
   }
@@ -4402,6 +4599,63 @@ function Member360Page({
           }}
         />
       )}
+      {paying && currentMembership ? (
+        <RecordPaymentOverlay
+          memberLabel={member.name}
+          membership={membershipFrom360(currentMembership)}
+          planName={currentMembership.plan.name}
+          onClose={() => setPaying(false)}
+          onRefresh={load}
+          onPayment={async (membershipId, payload) => {
+            const payment = await onPayment(membershipId, payload);
+            await load();
+            return payment;
+          }}
+        />
+      ) : null}
+      {confirmDelete &&
+        createPortal(
+          <div
+            className="member-details-overlay"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !deleting) setConfirmDelete(false);
+            }}
+          >
+            <section className="member-details-panel form-panel is-confirm" role="dialog" aria-modal="true" aria-labelledby="member-delete-title">
+              <span className="eyebrow">{t("common.delete")}</span>
+              <h3 id="member-delete-title">{t("m360.deleteTitle")}</h3>
+              <p className="member-delete-copy">{t("member.deleteConfirm")}</p>
+              <p className="member-delete-name">{member.name}</p>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={deleting}
+                  onClick={() => setConfirmDelete(false)}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={deleting}
+                  onClick={() =>
+                    void (async () => {
+                      setDeleting(true);
+                      const ok = await onDelete(member.id, { confirmed: true });
+                      setDeleting(false);
+                      if (ok !== false) onBack();
+                      else setConfirmDelete(false);
+                    })()
+                  }
+                >
+                  {deleting ? t("common.saving") : t("common.delete")}
+                </button>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
       <button type="button" className="text-button member-360-back" onClick={onBack}>
         {t("m360.back")}
       </button>
@@ -4475,15 +4729,12 @@ function Member360Page({
           </div>
           <button
             type="button"
-            className="text-button"
-            onClick={() =>
-              void (async () => {
-                const ok = await onDelete(member.id);
-                if (ok !== false) onBack();
-              })()
-            }
+            className="member-360-delete"
+            aria-label={t("common.delete")}
+            onClick={() => setConfirmDelete(true)}
           >
-            {t("common.delete")}
+            <Trash2 size={15} />
+            <span>{t("common.delete")}</span>
           </button>
         </div>
         <div className="info-list">
@@ -4762,10 +5013,8 @@ function Members({
   classes,
   plans,
   memberships,
-  onCheckIn,
   onCreate,
   onUpdate,
-  onPayment,
   onOpenProfile,
 }: {
   people: Member[];
@@ -4774,7 +5023,6 @@ function Members({
   classes: FitnessClass[];
   plans: Plan[];
   memberships: Membership[];
-  onCheckIn: (id: number) => void;
   onOpenProfile: (id: number) => void;
   onCreate: (payload: {
     first_name: string;
@@ -4817,7 +5065,6 @@ function Members({
       };
     },
   ) => Promise<boolean> | void;
-  onPayment: OnPayment;
 }) {
   const { t } = useLang();
   const [open, setOpen] = useState(false);
@@ -4825,6 +5072,7 @@ function Members({
   const [editingMembership, setEditingMembership] = useState<Membership | undefined>();
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<MemberFormErrors>({});
   const memberStatuses = useMemo(() => {
     const statuses: Record<number, string> = {};
     indexLatestMembership(memberships).forEach((membership, id) => {
@@ -4896,6 +5144,7 @@ function Members({
     setEditingMember(null);
     setEditingMembership(undefined);
     setFormError("");
+    setFieldErrors({});
   };
 
   const openCreateForm = () => {
@@ -4903,36 +5152,26 @@ function Members({
     setEditingMembership(undefined);
     setForm(blankMemberForm());
     setFormError("");
+    setFieldErrors({});
     setOpen(true);
-  };
-
-  const openEditForm = (member: Member, membership?: Membership) => {
-    setEditingMember(member);
-    setEditingMembership(membership);
-    setForm(memberFormValues(member, membership, plans));
-    setFormError("");
-    setOpen(true);
-    void gymApi.memberClass(member.id).then((memberClass) => {
-      if (memberClass.training_class_id) {
-        setForm((current) => ({ ...current, class_id: String(memberClass.training_class_id) }));
-      }
-    }).catch(() => undefined);
   };
 
   const submit = async () => {
     if (saving) return;
-    if (!form.first_name.trim() || !form.last_name.trim()) return;
-    if (form.email.trim() && !isValidEmail(form.email)) {
-      setFormError(t("form.validEmail"));
+    const checked = validateMemberForm(
+      form,
+      editingMember ? "edit" : "create",
+      t,
+      Number(editingMembership?.total_paid || 0),
+    );
+    if (checked.summary) {
+      setFieldErrors(checked.errors);
+      setFormError(checked.summary);
       return;
     }
-    if (!editingMember && (!form.id_number.trim() || !form.address.trim())) return;
     const remainingValue = form.remaining === "" ? undefined : Number(form.remaining);
-    if (remainingValue !== undefined && (!Number.isFinite(remainingValue) || remainingValue < 0)) {
-      setFormError(t("form.validAmount"));
-      return;
-    }
     setFormError("");
+    setFieldErrors({});
     setSaving(true);
     try {
       if (editingMember) {
@@ -4970,10 +5209,6 @@ function Members({
         return;
       }
       const paid = Number(form.amount_paid || 0);
-      if (!Number.isFinite(paid) || paid < 0) {
-        setFormError(t("form.validAmount"));
-        return;
-      }
       const ok = await onCreate({
         first_name: form.first_name.trim(),
         last_name: form.last_name.trim(),
@@ -5244,37 +5479,50 @@ function Members({
           <option value="none">{t("members.noMembership")}</option>
         </select>
       </div>
-      {open && (
-        <section className="panel form-panel member-form">
-          <span className="eyebrow">{editingMember ? t("members.editHead") : t("members.new")}</span>
-          <MemberRecordFields
-            mode={editingMember ? "edit" : "create"}
-            form={form}
-            setForm={setForm}
-            classes={classes}
-            plans={plans}
-          />
-          {formError && <Alert>{formError}</Alert>}
-          <div className="form-actions">
-            <button type="button" className="secondary" onClick={closeForm} disabled={saving}>
-              {t("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void submit()}
-              disabled={
-                saving ||
-                !form.first_name.trim() ||
-                !form.last_name.trim() ||
-                (!editingMember && (!form.id_number.trim() || !form.address.trim()))
-              }
-            >
-              {saving ? t("common.saving") : editingMember ? t("common.save") : t("members.create")}
-            </button>
-          </div>
-        </section>
-      )}
+      {open &&
+        createPortal(
+          <div
+            className="member-details-overlay"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !saving) closeForm();
+            }}
+          >
+            <section className="member-details-panel form-panel member-form is-wide">
+              <span className="eyebrow">{editingMember ? t("members.editHead") : t("members.new")}</span>
+              <MemberRecordFields
+                mode={editingMember ? "edit" : "create"}
+                form={form}
+                setForm={setForm}
+                classes={classes}
+                plans={plans}
+                errors={fieldErrors}
+                onFieldEdit={(field) => {
+                  setFieldErrors((current) => {
+                    if (!current[field]) return current;
+                    const next = { ...current };
+                    delete next[field];
+                    return next;
+                  });
+                }}
+              />
+              {formError && <Alert onDismiss={() => setFormError("")}>{formError}</Alert>}
+              <div className="form-actions">
+                <button type="button" className="secondary" onClick={closeForm} disabled={saving}>
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => void submit()}
+                  disabled={saving}
+                >
+                  {saving ? t("common.saving") : editingMember ? t("common.save") : t("members.create")}
+                </button>
+              </div>
+            </section>
+          </div>,
+          document.body,
+        )}
       <section className="panel table-wrap">
         <table>
           <thead>
@@ -5285,7 +5533,6 @@ function Members({
               <th>{t("members.paidCol")}</th>
               <th>{t("members.stillOwes")}</th>
               <th>{t("members.payment")}</th>
-              <th>{t("common.actions")}</th>
             </tr>
           </thead>
           <tbody>
@@ -5337,62 +5584,6 @@ function Members({
                     ) : (
                       <span className="status expired">{t("members.noPlan")}</span>
                     )}
-                  </td>
-                  <td className="record-actions" data-label={t("common.actions")}>
-                    <div className="table-actions">
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onOpenProfile(member.id);
-                        }}
-                      >
-                        {t("m360.open")}
-                      </button>
-                      <button
-                        type="button"
-                        className="text-button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openEditForm(member, membership);
-                        }}
-                      >
-                        {t("common.edit")}
-                      </button>
-                      {membership ? (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openRecordPaymentForm({
-                              memberLabel: member.name,
-                              membership,
-                              onPayment,
-                            });
-                          }}
-                        >
-                          {t("pay.record")}
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="text-button"
-                        disabled={memberStatus !== "active" && memberStatus !== "expiring_soon"}
-                        title={
-                          memberStatus === "active" || memberStatus === "expiring_soon"
-                            ? undefined
-                            : t("att.required")
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onCheckIn(member.id);
-                        }}
-                      >
-                        {t("att.checkIn")}
-                      </button>
-                    </div>
                   </td>
                 </tr>
               );
@@ -5751,20 +5942,22 @@ function Memberships({
       notes: string;
     },
   ) => Promise<boolean> | void;
-  onDelete: (id: number) => Promise<boolean> | void;
+  onDelete: (id: number, options?: { confirmed?: boolean }) => Promise<boolean> | void;
   onSetPaymentStatus: (membership: Membership, status: "paid" | "unpaid") => Promise<boolean> | void;
   onPayment: OnPayment;
 }) {
   const { t } = useLang();
   void onUpdate;
 
+  const [paymentTarget, setPaymentTarget] = useState<Membership | null>(null);
   const addPayment = (membership: Membership) => {
-    openRecordPaymentForm({
-      memberLabel: memberName(membership.member_id),
-      membership,
-      onPayment,
-    });
+    setPaymentTarget(membership);
   };
+  useEffect(() => {
+    if (!paymentTarget) return;
+    const latest = items.find((item) => item.id === paymentTarget.id);
+    if (latest && latest !== paymentTarget) setPaymentTarget(latest);
+  }, [items, paymentTarget]);
   const [paymentFilter, setPaymentFilter] = useState("");
   const moneySummary = useMemo(() => {
     const counts = { owing: 0, owingTotal: 0, paid: 0, unpaid: 0, partial: 0 };
@@ -5827,12 +6020,62 @@ function Memberships({
     const label = document.createElement("span");
     label.className = "eyebrow";
     label.textContent = t("membership.details");
+    const tools = document.createElement("div");
+    tools.className = "membership-details-tools";
+    const remove = document.createElement("button");
+    remove.className = "membership-details-delete";
+    remove.type = "button";
+    remove.setAttribute("aria-label", t("common.delete"));
+    remove.title = t("common.delete");
+    remove.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>';
+    remove.onclick = () => {
+      panel.className = "member-details-panel form-panel is-confirm";
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+      panel.setAttribute("aria-labelledby", "membership-delete-title");
+      panel.replaceChildren();
+      const eyebrow = document.createElement("span");
+      eyebrow.className = "eyebrow";
+      eyebrow.textContent = t("common.delete");
+      const title = document.createElement("h3");
+      title.id = "membership-delete-title";
+      title.textContent = t("membership.deleteTitle");
+      const copy = document.createElement("p");
+      copy.className = "member-delete-copy";
+      copy.textContent = t("membership.deleteHint");
+      const name = document.createElement("p");
+      name.className = "member-delete-name";
+      name.textContent = memberName(item.member_id);
+      const confirmActions = document.createElement("div");
+      confirmActions.className = "form-actions";
+      const cancel = document.createElement("button");
+      cancel.className = "secondary";
+      cancel.type = "button";
+      cancel.textContent = t("common.cancel");
+      cancel.onclick = () => showMembershipDetails(item);
+      const confirm = document.createElement("button");
+      confirm.className = "danger";
+      confirm.type = "button";
+      confirm.textContent = t("common.delete");
+      confirm.onclick = () => {
+        confirm.disabled = true;
+        cancel.disabled = true;
+        void Promise.resolve(onDelete(item.id, { confirmed: true })).then((ok) => {
+          if (ok !== false) dismissOverlay(overlay);
+          else showMembershipDetails(item);
+        });
+      };
+      confirmActions.append(cancel, confirm);
+      panel.append(eyebrow, title, copy, name, confirmActions);
+    };
     const close = document.createElement("button");
     close.className = "membership-details-x";
     close.type = "button";
     close.setAttribute("aria-label", t("common.close"));
     close.textContent = "×";
     close.onclick = () => dismissOverlay(overlay);
+    tools.append(remove, close);
     const heading = document.createElement("h2");
     heading.textContent = memberName(item.member_id);
     const badges = document.createElement("div");
@@ -5844,7 +6087,7 @@ function Memberships({
     paymentBadge.className = `status payment ${item.payment_status}`;
     paymentBadge.textContent = statusLabel(item.payment_status);
     badges.append(statusBadge, paymentBadge);
-    head.append(label, close, heading, badges);
+    head.append(label, tools, heading, badges);
 
     const grid = document.createElement("div");
     grid.className = "membership-details-grid";
@@ -5883,14 +6126,7 @@ function Memberships({
       dismissOverlay(overlay);
       addPayment(item);
     };
-    const remove = document.createElement("button");
-    remove.className = "secondary";
-    remove.textContent = t("common.delete");
-    remove.onclick = () => {
-      dismissOverlay(overlay);
-      void onDelete(item.id);
-    };
-    actions.append(renew, pay, remove);
+    actions.append(renew, pay);
     panel.append(head, grid, actions);
     overlay.append(panel);
     document.body.append(overlay);
@@ -5919,7 +6155,16 @@ function Memberships({
   };
 
   return (
-    <div className="content">
+    <div className="content memberships-page">
+      {paymentTarget ? (
+        <RecordPaymentOverlay
+          memberLabel={memberName(paymentTarget.member_id)}
+          membership={paymentTarget}
+          planName={planName(paymentTarget.plan_id)}
+          onClose={() => setPaymentTarget(null)}
+          onPayment={onPayment}
+        />
+      ) : null}
       <PageHeader
         eyebrow={t("memberships.eyebrow")}
         title={t("memberships.title")}
@@ -6051,7 +6296,7 @@ function Memberships({
             {pagedItems.map((item) => {
               const remaining = Number(item.remaining_balance || 0);
               return (
-              <tr className="record-card" key={item.id} onClick={() => showMembershipDetails(item)}>
+              <tr className="record-card record-card-membership" key={item.id} onClick={() => showMembershipDetails(item)}>
                 <td className="record-name" data-label={t("dash.member")}>
                   <span className="record-name-line">
                     {item.status === "active" ? (
@@ -6469,6 +6714,19 @@ function GymPayments({
   const [selectedMonth, setSelectedMonth] = useState(`${now.getFullYear()}-${now.getMonth() + 1}`);
   const [exporting, setExporting] = useState<"xlsx" | "pdf" | "">("");
   const [deskError, setDeskError] = useState("");
+  const [paymentTarget, setPaymentTarget] = useState<{ membership: Membership; memberLabel: string } | null>(null);
+  useEffect(() => {
+    if (!paymentTarget) return;
+    const latest = memberships.find((item) => item.id === paymentTarget.membership.id);
+    if (
+      latest &&
+      (latest.remaining_balance !== paymentTarget.membership.remaining_balance ||
+        latest.total_paid !== paymentTarget.membership.total_paid ||
+        latest.price !== paymentTarget.membership.price)
+    ) {
+      setPaymentTarget({ ...paymentTarget, membership: latest });
+    }
+  }, [memberships, paymentTarget]);
   const [year, month] = selectedMonth.split("-").map(Number);
   const todayKey = localDay(now.toISOString());
 
@@ -6571,20 +6829,7 @@ function GymPayments({
   };
 
   const takePayment = (membership: Membership, memberLabel: string) => {
-    openRecordPaymentForm({
-      memberLabel,
-      membership,
-      onPayment: async (membershipId, payload) => {
-        const payment = await onPayment(membershipId, payload);
-        if (payment && typeof payment === "object" && "id" in payment) {
-          try {
-            await gymApi.openPaymentReceipt(payment.id);
-          } catch {
-            /* receipt is optional after a successful take */
-          }
-        }
-      },
-    });
+    setPaymentTarget({ membership, memberLabel });
   };
 
   const submitSearch = (event: FormEvent) => {
@@ -6623,6 +6868,24 @@ function GymPayments({
 
   return (
     <div className="content cash-page">
+      {paymentTarget ? (
+        <RecordPaymentOverlay
+          memberLabel={paymentTarget.memberLabel}
+          membership={paymentTarget.membership}
+          onClose={() => setPaymentTarget(null)}
+          onPayment={async (membershipId, payload) => {
+            const payment = await onPayment(membershipId, payload);
+            if (payment && typeof payment === "object" && "id" in payment) {
+              try {
+                await gymApi.openPaymentReceipt(payment.id);
+              } catch {
+                /* receipt is optional after a successful take */
+              }
+            }
+            return payment;
+          }}
+        />
+      ) : null}
       <PageHeader
         eyebrow={t("cash.eyebrow")}
         title={t("cash.title")}
@@ -6646,7 +6909,11 @@ function GymPayments({
           <span>{t("cash.find")}</span>
         </button>
       </form>
-      {lookupError && <div className="error app-banner">{lookupError}</div>}
+      {lookupError && (
+        <Alert onDismiss={() => setLookupError("")} dismissLabel={t("common.dismiss")}>
+          {lookupError}
+        </Alert>
+      )}
       {Boolean(matches.length) && (
         <section className="panel desk-matches">
           {matches.map((member) => {
@@ -6775,7 +7042,11 @@ function GymPayments({
         </table>
         {!owing.length && <EmptyState title={t("cash.settled")} />}
       </section>
-      {deskError && <div className="error app-banner">{deskError}</div>}
+      {deskError && (
+        <Alert onDismiss={() => setDeskError("")} dismissLabel={t("common.dismiss")}>
+          {deskError}
+        </Alert>
+      )}
       <section className="panel table-wrap">
         <div className="panel-heading desk-heading cash-log-head">
           <h3>{t("cash.history")}</h3>
@@ -7112,6 +7383,7 @@ function AttendancePage({
       </form>
       {scannerOpen ? (
         <MemberQrScanner
+          memberships={memberships}
           isInside={(id) => Boolean(insideVisit(id))}
           canCheckIn={(id) => canEnter(id)}
           onCheckIn={onCheckIn}
@@ -7123,7 +7395,11 @@ function AttendancePage({
           onClose={() => setScannerOpen(false)}
         />
       ) : null}
-      {lookupError && <div className="error app-banner">{lookupError}</div>}
+      {lookupError && (
+        <Alert onDismiss={() => setLookupError("")} dismissLabel={t("common.dismiss")}>
+          {lookupError}
+        </Alert>
+      )}
       {Boolean(matches.length) && (
         <section className="panel desk-matches">
           {matches.map((member) => {
@@ -7361,6 +7637,7 @@ function Trainers({
   trainers,
   canAdminister,
   onCreate,
+  onUpdate,
   onUpdatePayroll,
   onDelete,
 }: {
@@ -7375,6 +7652,16 @@ function Trainers({
     pay_amount?: number | string;
     is_paid?: boolean;
   }) => Promise<boolean> | void;
+  onUpdate: (
+    id: number,
+    payload: {
+      first_name: string;
+      last_name: string;
+      specialization?: string;
+      phone?: string;
+      monthly_pay?: number | string;
+    },
+  ) => Promise<boolean> | void;
   onUpdatePayroll: (
     id: number,
     payload: {
@@ -7393,6 +7680,9 @@ function Trainers({
   const [year, month] = selected.split("-").map(Number);
   const [rows, setRows] = useState<Trainer[]>(trainers);
   const [open, setOpen] = useState(false);
+  const [selectedTrainer, setSelectedTrainer] = useState<Trainer | null>(null);
+  const [editing, setEditing] = useState<Trainer | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     first_name: "",
@@ -7406,8 +7696,10 @@ function Trainers({
     let cancelled = false;
     void gymApi
       .trainers(year, month)
-      .then((rows) => {
-        if (!cancelled) setRows(rows);
+      .then((next) => {
+        if (cancelled) return;
+        setRows(next);
+        setSelectedTrainer((current) => (current ? next.find((row) => row.id === current.id) ?? null : current));
       })
       .catch(() => {
         if (!cancelled) setRows([]);
@@ -7430,28 +7722,59 @@ function Trainers({
     );
   }, [rows]);
 
+  const resetForm = () => {
+    setForm({
+      first_name: "",
+      last_name: "",
+      specialization: "",
+      phone: "",
+      monthly_pay: "",
+    });
+    setEditing(null);
+    setOpen(false);
+  };
+  const openCreate = () => {
+    setSelectedTrainer(null);
+    setConfirmDelete(false);
+    setEditing(null);
+    setForm({
+      first_name: "",
+      last_name: "",
+      specialization: "",
+      phone: "",
+      monthly_pay: "",
+    });
+    setOpen(true);
+  };
+  const startEdit = (trainer: Trainer) => {
+    setSelectedTrainer(null);
+    setConfirmDelete(false);
+    setEditing(trainer);
+    setForm({
+      first_name: trainer.first_name,
+      last_name: trainer.last_name,
+      specialization: trainer.specialization || "",
+      phone: trainer.phone || "",
+      monthly_pay: trainer.monthly_pay === "" || trainer.monthly_pay == null ? "" : String(trainer.monthly_pay),
+    });
+    setOpen(true);
+  };
   const submit = async () => {
     if (saving || !form.first_name.trim() || !form.last_name.trim()) return;
     const monthly = form.monthly_pay === "" ? 0 : Number(form.monthly_pay);
     if (!Number.isFinite(monthly) || monthly < 0) return;
     setSaving(true);
     try {
-      const ok = await onCreate({
+      const payload = {
         first_name: form.first_name.trim(),
         last_name: form.last_name.trim(),
         specialization: form.specialization.trim(),
         phone: form.phone.trim(),
         monthly_pay: monthly,
-      });
+      };
+      const ok = editing ? await onUpdate(editing.id, payload) : await onCreate(payload);
       if (ok === false) return;
-      setForm({
-        first_name: "",
-        last_name: "",
-        specialization: "",
-        phone: "",
-        monthly_pay: "",
-      });
-      setOpen(false);
+      resetForm();
     } finally {
       setSaving(false);
     }
@@ -7542,7 +7865,7 @@ function Trainers({
             <button
               type="button"
               className="primary"
-              onClick={() => setOpen(true)}
+              onClick={openCreate}
               aria-label={t("train.add")}
             >
               <Plus size={16} />
@@ -7573,63 +7896,167 @@ function Trainers({
           <small>{t("train.unpaidMonth")}</small>
         </div>
       </div>
+      {selectedTrainer && (
+        <div
+          className="member-details-overlay"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !saving) {
+              setSelectedTrainer(null);
+              setConfirmDelete(false);
+            }
+          }}
+        >
+          <section className="panel member-details-panel admin-user-details admin-account-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">{t("train.details")}</span>
+                <h3>{selectedTrainer.first_name} {selectedTrainer.last_name}</h3>
+              </div>
+              <div className="admin-user-heading-actions">
+                {selectedTrainer.is_paid ? (
+                  <Badge value="paid" payment />
+                ) : Number(selectedTrainer.pay_amount || selectedTrainer.monthly_pay || 0) > 0 ? (
+                  <Badge value="unpaid" payment />
+                ) : (
+                  <span className="status">{t("train.noPay")}</span>
+                )}
+                {canAdminister && (
+                  <button
+                    type="button"
+                    className="membership-details-delete"
+                    disabled={saving}
+                    aria-label={t("train.delete")}
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="membership-details-x"
+                  aria-label={t("common.close")}
+                  onClick={() => { setSelectedTrainer(null); setConfirmDelete(false); }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            <div className="info-list">
+              <p><span>{t("common.phone")}</span><strong>{selectedTrainer.phone || t("common.noPhone")}</strong></p>
+              <p><span>{t("train.spec")}</span><strong>{selectedTrainer.specialization || "—"}</strong></p>
+              <p><span>{t("train.monthly")}</span><strong>{Number(selectedTrainer.monthly_pay) ? money(selectedTrainer.monthly_pay) : "—"}</strong></p>
+              <p>
+                <span>{t("train.thisMonth")}</span>
+                <strong>{Number(selectedTrainer.pay_amount || selectedTrainer.monthly_pay || 0) ? money(selectedTrainer.pay_amount || selectedTrainer.monthly_pay) : "—"}</strong>
+              </p>
+            </div>
+            {canAdminister && (
+              <div className="form-actions">
+                <button className="secondary" onClick={() => startEdit(selectedTrainer)}>{t("train.edit")}</button>
+                <button className="secondary" onClick={() => recordWork(selectedTrainer)}>{t("train.setPay")}</button>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+      {confirmDelete && selectedTrainer && createPortal(
+        <div
+          className="member-details-overlay"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !saving) setConfirmDelete(false);
+          }}
+        >
+          <section className="member-details-panel form-panel is-confirm" role="dialog" aria-modal="true" aria-labelledby="trainer-delete-title">
+            <span className="eyebrow">{t("common.delete")}</span>
+            <h3 id="trainer-delete-title">{t("train.deleteSure")}</h3>
+            <p className="member-delete-copy">{t("train.confirmDelete", { name: `${selectedTrainer.first_name} ${selectedTrainer.last_name}` })}</p>
+            <p className="member-delete-name">{selectedTrainer.first_name} {selectedTrainer.last_name}</p>
+            <div className="form-actions">
+              <button type="button" className="secondary" disabled={saving} onClick={() => setConfirmDelete(false)}>
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={saving}
+                onClick={() =>
+                  void (async () => {
+                    setSaving(true);
+                    const ok = await onDelete(selectedTrainer.id);
+                    setSaving(false);
+                    if (ok !== false) {
+                      setConfirmDelete(false);
+                      setSelectedTrainer(null);
+                    }
+                  })()
+                }
+              >
+                {saving ? t("common.saving") : t("common.delete")}
+              </button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
       {open && canAdminister && (
-        <section className="panel form-panel">
-          <span className="eyebrow">{t("train.new")}</span>
-          <div className="date-fields">
-            <label>
-              {t("common.firstName")}
+        <div className="member-details-overlay" onClick={(event) => { if (event.target === event.currentTarget && !saving) resetForm(); }}>
+        <section className="panel form-panel member-details-panel admin-account-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">{editing ? t("train.edit") : t("train.new")}</span>
+              <h3>{editing ? `${editing.first_name} ${editing.last_name}` : t("train.add")}</h3>
+            </div>
+            <button type="button" className="membership-details-x" aria-label={t("common.close")} onClick={resetForm}>
+              <X size={16} />
+            </button>
+          </div>
+          <FieldGrid>
+            <Field label={t("common.firstName")}>
               <input
                 value={form.first_name}
                 onChange={(event) => setForm({ ...form, first_name: event.target.value })}
               />
-            </label>
-            <label>
-              {t("common.lastName")}
+            </Field>
+            <Field label={t("common.lastName")}>
               <input
                 value={form.last_name}
                 onChange={(event) => setForm({ ...form, last_name: event.target.value })}
               />
-            </label>
-          </div>
-          <div className="date-fields">
-            <label>
-              {t("train.spec")}
+            </Field>
+            <Field label={t("train.spec")}>
               <input
                 value={form.specialization}
                 onChange={(event) => setForm({ ...form, specialization: event.target.value })}
                 placeholder={t("train.specPh")}
               />
-            </label>
-            <label>
-              {t("common.phone")}
+            </Field>
+            <Field label={t("common.phone")}>
               <PhoneField
                 value={form.phone}
                 onChange={(event) => setForm({ ...form, phone: event.target.value })}
               />
-            </label>
-          </div>
-          <p className="form-caption">{t("train.monthlyCaption")}</p>
-          <label>
-            {t("train.monthlyMad")}
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="400"
-              value={form.monthly_pay}
-              onChange={(event) => setForm({ ...form, monthly_pay: event.target.value })}
-            />
-          </label>
+            </Field>
+            <Field label={t("train.monthlyMad")} wide>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="400"
+                value={form.monthly_pay}
+                onChange={(event) => setForm({ ...form, monthly_pay: event.target.value })}
+              />
+            </Field>
+          </FieldGrid>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setOpen(false)} disabled={saving}>
+            <button className="secondary" onClick={resetForm} disabled={saving}>
               {t("common.cancel")}
             </button>
             <button className="primary" onClick={() => void submit()} disabled={saving}>
-              {saving ? t("common.saving") : t("train.add")}
+              {saving ? t("common.saving") : editing ? t("common.save") : t("train.add")}
             </button>
           </div>
         </section>
+        </div>
       )}
       <section className="panel table-wrap">
         <table>
@@ -7640,14 +8067,17 @@ function Trainers({
               <th>{t("train.monthly")}</th>
               <th>{t("train.thisMonth")}</th>
               <th>{t("train.paid")}</th>
-              {canAdminister ? <th>{t("common.actions")}</th> : null}
             </tr>
           </thead>
           <tbody>
             {rows.map((trainer) => {
               const pay = Number(trainer.pay_amount || trainer.monthly_pay || 0);
               return (
-                <tr className="record-card record-card-trainer" key={trainer.id}>
+                <tr
+                  className="record-card record-card-trainer"
+                  key={trainer.id}
+                  onClick={() => { setConfirmDelete(false); setSelectedTrainer(trainer); }}
+                >
                   <td className="record-name" data-label={t("train.trainer")}>
                     <strong>
                       {trainer.first_name} {trainer.last_name}
@@ -7681,47 +8111,6 @@ function Trainers({
                       <span className="status">{t("train.noPay")}</span>
                     )}
                   </td>
-                  {canAdminister ? (
-                    <td className="record-actions" data-label={t("common.actions")}>
-                      <div className="table-actions">
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => recordWork(trainer)}
-                        >
-                          {t("train.setPay")}
-                        </button>
-                        <button
-                          type="button"
-                          className={`payment-status-action ${trainer.is_paid ? "paid" : "unpaid"}`}
-                          title={trainer.is_paid ? t("pay.markUnpaid") : t("pay.markPaid")}
-                          aria-label={trainer.is_paid ? t("pay.markUnpaid") : t("pay.markPaid")}
-                          onClick={() =>
-                            onUpdatePayroll(trainer.id, {
-                              year,
-                              month,
-                              pay_amount: trainer.pay_amount || trainer.monthly_pay,
-                              is_paid: !trainer.is_paid,
-                            })
-                          }
-                        >
-                          {trainer.is_paid ? <Check size={12} strokeWidth={2.25} /> : <X size={12} strokeWidth={2.25} />}
-                        </button>
-                        <button
-                          type="button"
-                          className="text-button"
-                          disabled={saving}
-                          onClick={() => {
-                            if (window.confirm(t("train.confirmDelete", { name: `${trainer.first_name} ${trainer.last_name}` }))) {
-                              void onDelete(trainer.id);
-                            }
-                          }}
-                        >
-                          {t("train.delete")}
-                        </button>
-                      </div>
-                    </td>
-                  ) : null}
                 </tr>
               );
             })}
@@ -7843,7 +8232,7 @@ function Reports({ canAdminister = false }: { canAdminister?: boolean }) {
           </div>
         </div>
       </div>
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
       {canAdminister && (
         <>
           <div className="stats-grid reports-stats">

@@ -822,7 +822,7 @@ export function ClassCalendar({
               <strong>{t("cal.repeatsEvery", { day: t(weekdayKey(form.weekday)) })}</strong>
             </p>
           </div>
-          {formError ? <Alert>{formError}</Alert> : null}
+          {formError ? <Alert onDismiss={() => setFormError("")}>{formError}</Alert> : null}
           <div className="form-actions">
             <button type="button" className="secondary" onClick={closeForm} disabled={saving}>
               {t("common.cancel")}
