@@ -849,6 +849,35 @@ export default function GymApp({
       : "dashboard",
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [navHidden, setNavHidden] = useState(false);
+  const lastScrollY = useRef(0);
+  useEffect(() => {
+    setNavHidden(false);
+  }, [page, mobileMenuOpen, notificationsOpen]);
+  useEffect(() => {
+    lastScrollY.current = window.scrollY;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(() => {
+        ticking = false;
+        if (!isCompactViewport() || mobileMenuOpen || notificationsOpen) {
+          setNavHidden(false);
+          lastScrollY.current = window.scrollY;
+          return;
+        }
+        const y = window.scrollY;
+        const delta = y - lastScrollY.current;
+        if (y < 24) setNavHidden(false);
+        else if (delta > 10) setNavHidden(true);
+        else if (delta < -10) setNavHidden(false);
+        lastScrollY.current = y;
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [mobileMenuOpen, notificationsOpen]);
   useEffect(() => {
     if (!canAdminister && (page === "admin" || page === "trainers" || page === "expenses")) setPage("dashboard");
     if (page === "member360" && !member360Id) setPage("members");
@@ -1632,7 +1661,7 @@ export default function GymApp({
         </div>
       </aside>
       <main className="main">
-        <header className="topbar">
+        <header className={`topbar${navHidden ? " is-away" : ""}`}>
           <button className="mobile-menu-button" aria-label={mobileMenuOpen ? t("nav.close") : t("nav.open")} onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
             {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
@@ -4150,11 +4179,11 @@ function Member360Page({
   const memberActions = (
     <>
       <button type="button" className="secondary" onClick={openEdit}>
-        {t("common.edit")}
+        <span>{t("common.edit")}</span>
       </button>
       {currentMembership ? (
         <button type="button" className="primary" onClick={openPay}>
-          {t("pay.record")}
+          <span>{t("pay.record")}</span>
         </button>
       ) : null}
       {currentVisit ? (
@@ -4163,7 +4192,7 @@ function Member360Page({
           className="secondary"
           onClick={() => void Promise.resolve(onCheckOut(member.id)).then(afterAction)}
         >
-          {t("att.checkOut")}
+          <span>{t("att.checkOut")}</span>
         </button>
       ) : (
         <button
@@ -4173,7 +4202,7 @@ function Member360Page({
           title={currentMembership ? undefined : t("att.required")}
           onClick={() => void Promise.resolve(onCheckIn(member.id)).then(afterAction)}
         >
-          {t("att.checkIn")}
+          <span>{t("att.checkIn")}</span>
         </button>
       )}
     </>
@@ -4250,17 +4279,19 @@ function Member360Page({
           </span>
           <div className="member-360-identity-copy">
             <span className="eyebrow">{memberRef}</span>
-            <h3>{member.name}</h3>
-            <div className="membership-details-badges">
-              {currentMembership ? (
-                <>
-                  {!member.is_active ? <Badge value="inactive" /> : null}
-                  {currentMembership.status === "active" ? null : <Badge value={currentMembership.status} />}
-                  <Badge value={currentMembership.payment_status} payment />
-                </>
-              ) : member.is_active ? null : (
-                <Badge value="inactive" />
-              )}
+            <div className="member-360-name-row">
+              <h3>{member.name}</h3>
+              <div className="membership-details-badges">
+                {currentMembership ? (
+                  <>
+                    {!member.is_active ? <Badge value="inactive" /> : null}
+                    {currentMembership.status === "active" ? null : <Badge value={currentMembership.status} />}
+                    <Badge value={currentMembership.payment_status} payment />
+                  </>
+                ) : member.is_active ? null : (
+                  <Badge value="inactive" />
+                )}
+              </div>
             </div>
           </div>
           <button
@@ -4367,6 +4398,7 @@ function Member360Page({
                 <th>{t("cash.method")}</th>
                 <th>{t("members.paidCol")}</th>
                 <th>{t("members.stillOwes")}</th>
+                <th>{t("common.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -4393,6 +4425,28 @@ function Member360Page({
                           {remaining > 0 ? money(remaining) : t("members.settled")}
                         </strong>
                       )}
+                    </td>
+                    <td className="record-actions" data-label={t("common.actions")}>
+                      <div className="table-actions">
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => void gymApi.openPaymentReceipt(payment.id).catch((e) => {
+                            setError(e instanceof Error ? e.message : t("cash.receiptFail"));
+                          })}
+                        >
+                          {t("cash.print")}
+                        </button>
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => void gymApi.downloadPaymentReceipt(payment.id).catch((e) => {
+                            setError(e instanceof Error ? e.message : t("cash.receiptFail"));
+                          })}
+                        >
+                          {t("cash.pdf")}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -5268,7 +5322,7 @@ function ClassesPage({
   };
 
   return (
-    <div className="content">
+    <div className="content classes-page">
       <PageHeader
         eyebrow={t("class.eyebrow")}
         title={t("class.title")}

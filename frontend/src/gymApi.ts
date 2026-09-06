@@ -297,6 +297,24 @@ function safeDownloadName(name: string, fallback: string) {
   return cleaned.slice(0, 180)
 }
 
+function downloadFilename(disposition: string, fallback: string) {
+  const utfName = disposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i)
+  const plainName = disposition.match(/filename="?([^";]+)"?/i)
+  const raw = (utfName?.[1] || plainName?.[1] || fallback).trim()
+  try {
+    return safeDownloadName(decodeURIComponent(raw.replace(/\+/g, ' ')), fallback)
+  } catch {
+    return safeDownloadName(raw, fallback)
+  }
+}
+
+function downloadMime(name: string, type: string) {
+  if (type && !type.includes('text/html') && !type.includes('application/json')) return type
+  if (name.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  if (name.endsWith('.pdf')) return 'application/pdf'
+  return type || 'application/octet-stream'
+}
+
 function requestError(status: number, body: unknown = {}) {
   const error = new Error(
     formatHttpError(status, body, {
@@ -345,22 +363,37 @@ async function downloadFile(path: string, fallbackName: string) {
       notifyIfSessionExpired(response.status, body)
       throw requestError(response.status, body)
     }
-    const blob = await response.blob()
-    const disposition = response.headers.get('Content-Disposition') || ''
-    const utfName = disposition.match(/filename\*=UTF-8''([^;]+)/i)
-    const plainName = disposition.match(/filename="?([^";]+)"?/i)
-    const filename = safeDownloadName(
-      decodeURIComponent(utfName?.[1] || plainName?.[1] || fallbackName),
-      fallbackName,
-    )
-    const url = URL.createObjectURL(blob)
+    const payload = await response.blob()
+    const type = response.headers.get('Content-Type') || payload.type || ''
+    if (type.includes('text/html') || type.includes('application/json')) {
+      throw new Error('Unable to download this file. Please try again.')
+    }
+    const filename = downloadFilename(response.headers.get('Content-Disposition') || '', fallbackName)
+    const file = new File([payload], filename, { type: downloadMime(filename, type) })
+    const appleTouch =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    const shareData = { files: [file], title: filename }
+    if (appleTouch && typeof navigator.canShare === 'function' && navigator.canShare(shareData) && navigator.share) {
+      try {
+        await navigator.share(shareData)
+        return
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return
+      }
+    }
+    const url = URL.createObjectURL(file)
     const link = document.createElement('a')
     link.href = url
     link.download = filename
+    link.rel = 'noopener'
+    link.style.display = 'none'
     document.body.appendChild(link)
     link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
+    window.setTimeout(() => {
+      link.remove()
+      URL.revokeObjectURL(url)
+    }, 4000)
   } catch (error) {
     if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
     throw error

@@ -291,6 +291,7 @@ export function ClassCalendar({
   const [form, setForm] = useState<ScheduleFormState>(emptyScheduleForm);
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [classFilter, setClassFilter] = useState("");
 
   const range = useMemo(() => periodRange(anchor, view), [anchor, view]);
   const rangeRef = useRef(range);
@@ -312,16 +313,34 @@ export function ClassCalendar({
     });
   }, [items, schedules]);
 
+  const classFilterId = classFilter ? Number(classFilter) : null;
+  const classOptions = useMemo(() => {
+    const names = new Map<number, string>();
+    for (const item of classes) names.set(item.id, item.name);
+    for (const item of schedules) {
+      if (!names.has(item.training_class_id)) names.set(item.training_class_id, item.class_name);
+    }
+    return [...names.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [classes, schedules]);
+  const visibleItems = useMemo(() => {
+    if (classFilterId == null || Number.isNaN(classFilterId)) return namedItems;
+    return namedItems.filter((item) => item.training_class_id === classFilterId);
+  }, [namedItems, classFilterId]);
+  const visibleSchedules = useMemo(() => {
+    if (classFilterId == null || Number.isNaN(classFilterId)) return schedules;
+    return schedules.filter((item) => item.training_class_id === classFilterId);
+  }, [schedules, classFilterId]);
+
   const byDate = useMemo(() => {
     const map = new Map<string, ClassCalendarItem[]>();
-    namedItems.forEach((item) => {
+    visibleItems.forEach((item) => {
       const key = item.date.slice(0, 10);
       const list = map.get(key) || [];
       list.push(item);
       map.set(key, list);
     });
     return map;
-  }, [namedItems]);
+  }, [visibleItems]);
 
   const periodLabel = useMemo(() => {
     if (view === "month") return monthLabel(anchor.getFullYear(), anchor.getMonth() + 1);
@@ -332,6 +351,32 @@ export function ClassCalendar({
   }, [anchor, view, lang]);
 
   const gridCells = view === "month" ? monthCells(anchor) : view === "week" ? weekCells(anchor) : [];
+  const schedulesByClass = useMemo(() => {
+    const dayOrder = Object.fromEntries(WEEKDAYS.map((day, index) => [day, index]));
+    const groups: { key: string; name: string; rows: ClassSchedule[] }[] = [];
+    const indexByKey = new Map<string, number>();
+    for (const item of visibleSchedules) {
+      const name = eventName(item.class_name, item.group);
+      const key = `${item.training_class_id}:${name}`;
+      let pos = indexByKey.get(key);
+      if (pos == null) {
+        pos = groups.length;
+        indexByKey.set(key, pos);
+        groups.push({ key, name, rows: [] });
+      }
+      groups[pos].rows.push(item);
+    }
+    groups.sort((a, b) => a.name.localeCompare(b.name));
+    for (const group of groups) {
+      group.rows.sort((a, b) => {
+        const day = (dayOrder[a.weekday] ?? 99) - (dayOrder[b.weekday] ?? 99);
+        if (day) return day;
+        return timeToMinutes(a.start_time) - timeToMinutes(b.start_time);
+      });
+    }
+    return groups;
+  }, [visibleSchedules]);
+
   const listDays = useMemo(() => {
     const start = range.from;
     const end = range.to;
@@ -574,15 +619,32 @@ export function ClassCalendar({
             </button>
           ))}
         </div>
+        {classOptions.length ? (
+          <label className="class-calendar-filter">
+            <select
+              className="ledger-select"
+              value={classFilter}
+              aria-label={t("cal.class")}
+              onChange={(event) => setClassFilter(event.target.value)}
+            >
+              <option value="">{t("cal.filterAll")}</option>
+              {classOptions.map(([id, name]) => (
+                <option key={id} value={String(id)}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="class-calendar-nav">
-          <button type="button" className="secondary" onClick={() => setAnchor(shiftAnchor(anchor, view, -1))} aria-label={t("cal.prev")}>
+          <button type="button" className="secondary class-cal-prev" onClick={() => setAnchor(shiftAnchor(anchor, view, -1))} aria-label={t("cal.prev")}>
             <ChevronLeft size={16} />
             <span>{t("cal.prev")}</span>
           </button>
-          <button type="button" className="secondary" onClick={() => setAnchor(startOfDay(new Date()))}>
+          <button type="button" className="secondary class-cal-today" onClick={() => setAnchor(startOfDay(new Date()))}>
             {t("cal.today")}
           </button>
-          <button type="button" className="secondary" onClick={() => setAnchor(shiftAnchor(anchor, view, 1))} aria-label={t("cal.next")}>
+          <button type="button" className="secondary class-cal-next" onClick={() => setAnchor(shiftAnchor(anchor, view, 1))} aria-label={t("cal.next")}>
             <span>{t("cal.next")}</span>
             <ChevronRight size={16} />
           </button>
@@ -774,7 +836,9 @@ export function ClassCalendar({
 
       {loading ? (
         <LoadingState label={t("common.loading")} />
-      ) : items.length ? (
+      ) : namedItems.length && !visibleItems.length ? (
+        <EmptyState title={t("cal.emptyFilter")} hint={t("cal.emptyFilterHint")} />
+      ) : namedItems.length ? (
         <>
           {view !== "day" ? (
             <section className="panel class-calendar-grid-wrap">
@@ -834,13 +898,14 @@ export function ClassCalendar({
         <EmptyState title={t("cal.empty")} hint={t("cal.emptyHint")} />
       )}
 
-      {schedules.length ? (
-        <section className="panel table-wrap">
+      {visibleSchedules.length ? (
+        <section className="panel table-wrap class-schedule-board">
           <div className="panel-heading">
             <div>
               <span className="eyebrow">{t("cal.schedule")}</span>
               <h3>{t("cal.allSchedules")}</h3>
             </div>
+            <span className="member-360-count">{visibleSchedules.length}</span>
           </div>
           <table>
             <thead>
@@ -853,7 +918,7 @@ export function ClassCalendar({
               </tr>
             </thead>
             <tbody>
-              {schedules.map((item) => (
+              {visibleSchedules.map((item) => (
                 <tr className="record-card" key={item.id}>
                   <td className="record-name" data-label={t("cal.class")}>
                     <strong>{eventName(item.class_name, item.group)}</strong>
@@ -876,6 +941,37 @@ export function ClassCalendar({
               ))}
             </tbody>
           </table>
+          <div className="class-schedule-phone">
+            {schedulesByClass.map((group) => (
+              <div className="class-schedule-group" key={group.key}>
+                <h4>
+                  {group.name}
+                  <span>{group.rows.length}</span>
+                </h4>
+                <ul>
+                  {group.rows.map((item) => (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        className={item.is_active ? undefined : "is-inactive"}
+                        onClick={() => setSelected(item)}
+                      >
+                        <span className="class-schedule-copy">
+                          <strong>{t(weekdayKey(item.weekday))}</strong>
+                          <small>
+                            {formatClock(item.start_time)}–{formatClock(item.end_time)}
+                            {" · "}
+                            {item.is_active ? t("common.active") : t("common.inactive")}
+                          </small>
+                        </span>
+                        <ChevronRight size={16} aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
         </section>
       ) : null}
 
