@@ -212,6 +212,79 @@ export interface Member360 {
   attendance: Attendance[]
   reminder: WhatsAppReminder | null
 }
+
+export type WeekdayName =
+  | 'monday'
+  | 'tuesday'
+  | 'wednesday'
+  | 'thursday'
+  | 'friday'
+  | 'saturday'
+  | 'sunday'
+
+export interface ClassSchedule {
+  id: number
+  training_class_id: number
+  class_name: string
+  class_type: string
+  weekday: string
+  start_time: string
+  end_time: string
+  trainer_id: number | null
+  trainer_name: string | null
+  location: string
+  group?: string
+  color?: string
+  capacity: number | null
+  is_active: boolean
+}
+
+export interface ClassSchedulePayload {
+  training_class_id: number
+  weekday: string
+  start_time: string
+  end_time: string
+  trainer_id?: number | null
+  location?: string
+  group?: string
+  color?: string
+  capacity?: number | null
+  is_active?: boolean
+}
+
+export interface ClassCalendarItem {
+  schedule_id: number
+  training_class_id: number
+  class_name: string
+  class_type: string
+  date: string
+  weekday: string
+  start_time: string
+  end_time: string
+  starts_at: string
+  ends_at: string
+  trainer_id: number | null
+  trainer_name: string | null
+  location: string
+  group?: string
+  color?: string
+  capacity: number | null
+  member_count: number
+  is_active: boolean
+}
+
+export interface ClassCalendar {
+  start_date: string
+  end_date: string
+  timezone: string
+  items: ClassCalendarItem[]
+}
+
+export interface MemberQrLookup {
+  member_id: number
+  name: string
+  is_active: boolean
+}
 const base = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 function csrfToken() {
   const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/)
@@ -225,12 +298,21 @@ function safeDownloadName(name: string, fallback: string) {
 }
 
 function requestError(status: number, body: unknown = {}) {
-  return new Error(
+  const error = new Error(
     formatHttpError(status, body, {
       notFound: 'The requested gym record was not found.',
       conflict: 'This operation conflicts with an existing gym record.',
     }),
-  )
+  ) as Error & { status: number }
+  error.status = status
+  return error
+}
+
+export function httpStatus(error: unknown): number | undefined {
+  if (error && typeof error === 'object' && 'status' in error && typeof error.status === 'number') {
+    return error.status
+  }
+  return undefined
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -305,6 +387,19 @@ export const gymApi = {
   memberClass: (id: number) => request<{ id: number | null; training_class_id: number | null; client_id: number }>(`/fitness/members/${id}/class`),
   setMemberClass: (id: number, classId: number | null) => request<{ id: number | null; training_class_id: number | null; client_id: number }>(`/fitness/members/${id}/class`, { method: 'PUT', body: JSON.stringify({ class_id: classId }) }),
   classes: () => request<FitnessClass[]>('/fitness/classes'),
+  classCalendar: (from: string, to: string) =>
+    request<ClassCalendar>(`/fitness/classes/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  classSchedules: (trainingClassId?: number) =>
+    request<ClassSchedule[]>(
+      `/fitness/classes/schedules${trainingClassId ? `?training_class_id=${trainingClassId}` : ''}`,
+    ),
+  classSchedule: (id: number) => request<ClassSchedule>(`/fitness/classes/schedules/${id}`),
+  createClassSchedule: (payload: ClassSchedulePayload) =>
+    request<ClassSchedule>('/fitness/classes/schedules', { method: 'POST', body: JSON.stringify(payload) }),
+  updateClassSchedule: (id: number, payload: ClassSchedulePayload) =>
+    request<ClassSchedule>(`/fitness/classes/schedules/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteClassSchedule: (id: number) =>
+    request<{ success: boolean }>(`/fitness/classes/schedules/${id}`, { method: 'DELETE' }),
   classDetail: (id: number) => request<FitnessClass>(`/fitness/classes/${id}`),
   createClass: (payload: { name: string; class_type: string; price_per_member: number | string; is_active?: boolean }) => request<FitnessClass>('/fitness/classes', { method: 'POST', body: JSON.stringify(payload) }),
   updateClass: (id: number, payload: { name: string; class_type: string; price_per_member: number | string; is_active?: boolean }) => request<FitnessClass>(`/fitness/classes/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
@@ -371,6 +466,8 @@ export const gymApi = {
   lookupAttendance: (q: string) => request<{ query: string; exact: boolean; matches: AttendanceDeskMember[] }>(`/fitness/attendance/lookup?q=${encodeURIComponent(q)}`),
   checkIn: (member_id: number) => request<Attendance>('/fitness/attendance/check-in', { method: 'POST', body: JSON.stringify({ member_id }) }),
   checkOut: (member_id: number) => request<Attendance>('/fitness/attendance/check-out', { method: 'POST', body: JSON.stringify({ member_id }) }),
+  memberQrLookup: (token: string) =>
+    request<MemberQrLookup>(`/fitness/members/qr/${encodeURIComponent(token)}`),
   memberQrUrl: (id: number) => `${base}/fitness/members/${id}/qr`,
   trainers: (year?: number, month?: number) => request<Trainer[]>(`/fitness/trainers${year && month ? `?year=${year}&month=${month}` : ''}`),
   createTrainer: (payload: { first_name: string; last_name: string; specialization?: string; phone?: string; monthly_pay?: number | string; pay_amount?: number | string; is_paid?: boolean }) => request<Trainer>('/fitness/trainers', { method: 'POST', body: JSON.stringify(payload) }),

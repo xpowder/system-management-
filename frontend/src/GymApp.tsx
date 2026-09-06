@@ -53,9 +53,11 @@ import {
   type WhatsAppReminderList,
 } from "./gymApi";
 import { bookingApi, type AdminUser, type AuthUser } from "./api";
+import { MemberQrScanner } from "./MemberQrScanner";
 import { can, isAdminOnlyNotification, isGymAdmin, isGymDesk } from "./permissions";
 import { clock, date, LanguageSwitch, money, monthLabel, statusLabel, todayLabel, translate, useLang, type Msg } from "./i18n";
 import { Alert, EmptyState, Field, FieldGrid, FormSection, LoadingState, PageHeader, PhoneField } from "./ui";
+import { ClassCalendar } from "./ClassCalendar";
 import { ThemeSwitch } from "./theme";
 import { playNotificationSound, unlockNotificationSound } from "./notificationSound";
 import "./App.css";
@@ -568,7 +570,15 @@ function isNotFoundError(error: unknown) {
 }
 
 function memberLocation(member: { address?: string; city?: string; postal_code?: string; country?: string }) {
-  return [member.address, member.city, member.postal_code, member.country].map((part) => part?.trim()).filter(Boolean).join(", ");
+  const parts: string[] = [];
+  for (const value of [member.address, member.city, member.postal_code, member.country]) {
+    const part = value?.trim();
+    if (!part) continue;
+    const key = part.toLowerCase();
+    if (parts.some((existing) => existing.toLowerCase() === key || existing.toLowerCase().includes(key))) continue;
+    parts.push(part);
+  }
+  return parts.join(", ");
 }
 
 function visitDurationLabel(
@@ -1797,7 +1807,9 @@ export default function GymApp({
         {page === "classes" && (
           <ClassesPage
             classes={classes}
+            trainers={trainers}
             canAdminister={canAdminister}
+            canManageSchedules={can(currentUser, "classes.mutate")}
             onCreate={createClass}
             onUpdate={updateClass}
             onDelete={deleteClass}
@@ -1845,6 +1857,7 @@ export default function GymApp({
             classes={classes}
             onCheckIn={checkIn}
             onCheckOut={checkOut}
+            onOpenProfile={openMember360}
           />
         )}
         {page === "reminders" && <RemindersPage />}
@@ -4088,7 +4101,7 @@ function Member360Page({
 
   if (loading && !data) {
     return (
-      <div className="content member-360">
+      <div className="content members-page member-360">
         <LoadingState label={t("common.loading")} />
       </div>
     );
@@ -4096,7 +4109,7 @@ function Member360Page({
 
   if (notFound) {
     return (
-      <div className="content member-360">
+      <div className="content members-page member-360">
         <PageHeader
           eyebrow={t("m360.eyebrow")}
           title={t("m360.notFound")}
@@ -4114,7 +4127,7 @@ function Member360Page({
 
   if (!data) {
     return (
-      <div className="content member-360">
+      <div className="content members-page member-360">
         <PageHeader
           eyebrow={t("m360.eyebrow")}
           title={t("page.member360")}
@@ -4131,9 +4144,43 @@ function Member360Page({
 
   const member = data.member;
   const paymentByMembership = new Map(data.memberships.map((item) => [item.id, item.plan.name]));
+  const remainingDue = Number(currentMembership?.remaining_balance || 0);
+  const lastVisit = data.attendance[0];
+  const memberRef = `#${String(member.id).padStart(5, "0")}${member.card_code ? ` · ${member.card_code}` : ""}`;
+  const memberActions = (
+    <>
+      <button type="button" className="secondary" onClick={openEdit}>
+        {t("common.edit")}
+      </button>
+      {currentMembership ? (
+        <button type="button" className="primary" onClick={openPay}>
+          {t("pay.record")}
+        </button>
+      ) : null}
+      {currentVisit ? (
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => void Promise.resolve(onCheckOut(member.id)).then(afterAction)}
+        >
+          {t("att.checkOut")}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="secondary"
+          disabled={!currentMembership}
+          title={currentMembership ? undefined : t("att.required")}
+          onClick={() => void Promise.resolve(onCheckIn(member.id)).then(afterAction)}
+        >
+          {t("att.checkIn")}
+        </button>
+      )}
+    </>
+  );
 
   return (
-    <div className="content member-360">
+    <div className="content members-page member-360">
       {editing && (
         <EditMemberOverlay
           member={member}
@@ -4148,78 +4195,86 @@ function Member360Page({
           }}
         />
       )}
+      <button type="button" className="text-button member-360-back" onClick={onBack}>
+        {t("m360.back")}
+      </button>
+      <PageHeader
+        eyebrow={`${t("m360.eyebrow")} · ${memberRef}`}
+        title={
+          <span className="record-name-line">
+            {currentMembership?.status === "active" || (!currentMembership && member.is_active) ? (
+              <span className="status-dot" title={t("status.active")} aria-label={t("status.active")} />
+            ) : null}
+            {member.name}
+          </span>
+        }
+        description={t("m360.intro")}
+        actions={memberActions}
+      />
       {error && <Alert onDismiss={() => setError("")}>{error}</Alert>}
       {loading && <LoadingState label={t("common.loading")} />}
 
-      <section className="panel member-360-hero">
-        <div className="member-360-hero-top">
-          <button type="button" className="text-button" onClick={onBack}>
-            {t("m360.back")}
-          </button>
-          <div className="member-360-hero-actions">
-            <button type="button" className="secondary" onClick={openEdit}>
-              {t("common.edit")}
-            </button>
-            {currentMembership && (
-              <button type="button" className="primary" onClick={openPay}>
-                {t("pay.record")}
-              </button>
-            )}
-            {currentVisit ? (
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => void Promise.resolve(onCheckOut(member.id)).then(afterAction)}
-              >
-                {t("att.checkOut")}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="secondary"
-                disabled={!currentMembership}
-                title={currentMembership ? undefined : t("att.required")}
-                onClick={() => void Promise.resolve(onCheckIn(member.id)).then(afterAction)}
-              >
-                {t("att.checkIn")}
-              </button>
-            )}
-            <button
-              type="button"
-              className="text-button"
-              onClick={() =>
-                void (async () => {
-                  const ok = await onDelete(member.id);
-                  if (ok !== false) onBack();
-                })()
-              }
-            >
-              {t("common.delete")}
-            </button>
-          </div>
+      <div className="ledger-stats member-360-kpis">
+        <div className={`ledger-stat${remainingDue > 0 ? " owing" : ""}`}>
+          <span>{t("members.stillOwe")}</span>
+          <strong>{currentMembership ? (remainingDue > 0 ? money(remainingDue) : t("members.settled")) : "—"}</strong>
+          <small>{currentMembership?.plan.name || t("members.noPlan")}</small>
         </div>
-        <div className="member-360-hero-id">
+        <div className="ledger-stat">
+          <span>{t("m360.class")}</span>
+          <strong>{trainingClass || "—"}</strong>
+          <small>{t("m360.cardCode")}: {member.card_code || t("m360.noCard")}</small>
+        </div>
+        <div className="ledger-stat">
+          <span>{t("m360.memberships")}</span>
+          <strong>{data.memberships.length}</strong>
+          <small>{currentMembership ? t("m360.current") : t("members.noMembership")}</small>
+        </div>
+        <div className="ledger-stat">
+          <span>{t("m360.attendance")}</span>
+          <strong>{data.attendance.length}</strong>
+          <small>
+            {currentVisit
+              ? t("att.inside")
+              : lastVisit
+                ? `${t("m360.lastVisit")} · ${date(lastVisit.checked_in_at)}`
+                : t("m360.noAttendance")}
+          </small>
+        </div>
+      </div>
+
+      <section className="panel form-panel member-360-profile">
+        <div className="member-360-identity">
           <span className="member-360-avatar" aria-hidden="true">
             {(member.name.trim().slice(0, 1) || "M").toUpperCase()}
           </span>
-          <div>
-            <span className="eyebrow">
-              #{String(member.id).padStart(5, "0")}
-              {member.card_code ? ` · ${member.card_code}` : ""}
-            </span>
-            <h2>{member.name}</h2>
+          <div className="member-360-identity-copy">
+            <span className="eyebrow">{memberRef}</span>
+            <h3>{member.name}</h3>
             <div className="membership-details-badges">
               {currentMembership ? (
                 <>
                   {!member.is_active ? <Badge value="inactive" /> : null}
-                  <Badge value={currentMembership.status} />
+                  {currentMembership.status === "active" ? null : <Badge value={currentMembership.status} />}
                   <Badge value={currentMembership.payment_status} payment />
                 </>
-              ) : (
-                <Badge value={member.is_active ? "active" : "inactive"} />
+              ) : member.is_active ? null : (
+                <Badge value="inactive" />
               )}
             </div>
           </div>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() =>
+              void (async () => {
+                const ok = await onDelete(member.id);
+                if (ok !== false) onBack();
+              })()
+            }
+          >
+            {t("common.delete")}
+          </button>
         </div>
         <div className="info-list">
           <p>
@@ -4245,170 +4300,170 @@ function Member360Page({
         </div>
       </section>
 
-      <section className="panel member-360-section">
+      <section className="panel table-wrap">
         <div className="panel-heading">
           <h3>{t("m360.memberships")}</h3>
+          <span className="member-360-count">{data.memberships.length}</span>
         </div>
         {data.memberships.length ? (
-          data.memberships.map((item) => {
-            const current = isCurrentMembershipStatus(item.status);
-            return (
-              <article className={`member-360-card${current ? " is-current" : ""}`} key={item.id}>
-                <div className="member-360-card-head">
-                  <div>
-                    {current ? <span className="eyebrow">{t("m360.current")}</span> : null}
-                    <h3>{item.plan.name}</h3>
-                  </div>
-                  <div className="membership-details-badges">
-                    <Badge value={item.status} />
-                    <Badge value={item.payment_status} payment />
-                  </div>
-                </div>
-                <div className="info-list">
-                  <p>
-                    <span>{t("members.startDate")}</span>
-                    <strong>{date(item.start_date)}</strong>
-                  </p>
-                  <p>
-                    <span>{t("remind.ends")}</span>
-                    <strong>{date(item.end_date)}</strong>
-                  </p>
-                  <p>
-                    <span>{t("members.price")}</span>
-                    <strong>{money(item.price)}</strong>
-                  </p>
-                  <p>
-                    <span>{t("members.paidCol")}</span>
-                    <strong>{money(item.total_paid)}</strong>
-                  </p>
-                  <p>
-                    <span>{t("members.stillOwes")}</span>
-                    <strong>{money(item.remaining_balance)}</strong>
-                  </p>
-                  {item.notes ? (
-                    <p className="is-wide">
-                      <span>{t("common.notes")}</span>
-                      <strong>{item.notes}</strong>
-                    </p>
-                  ) : null}
-                </div>
-              </article>
-            );
-          })
+          <table>
+            <thead>
+              <tr>
+                <th>{t("memberships.plan")}</th>
+                <th>{t("members.startDate")}</th>
+                <th>{t("remind.ends")}</th>
+                <th>{t("members.price")}</th>
+                <th>{t("members.paidCol")}</th>
+                <th>{t("members.stillOwes")}</th>
+                <th>{t("members.payment")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.memberships.map((item) => {
+                const remaining = Number(item.remaining_balance || 0);
+                const current = isCurrentMembershipStatus(item.status);
+                return (
+                  <tr className="record-card" key={item.id}>
+                    <td className="record-name" data-label={t("memberships.plan")}>
+                      <strong>{item.plan.name}</strong>
+                      {current ? <span className="eyebrow">{t("m360.current")}</span> : null}
+                      {item.status === "active" ? null : <Badge value={item.status} />}
+                    </td>
+                    <td data-label={t("members.startDate")}>{date(item.start_date)}</td>
+                    <td data-label={t("remind.ends")}>{date(item.end_date)}</td>
+                    <td className="record-price" data-label={t("members.price")}>{money(item.price)}</td>
+                    <td className="record-paid" data-label={t("members.paidCol")}>{money(item.total_paid)}</td>
+                    <td className="record-owing table-money" data-label={t("members.stillOwes")}>
+                      <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
+                        {remaining > 0 ? money(remaining) : t("members.settled")}
+                      </strong>
+                    </td>
+                    <td className="record-pay" data-label={t("members.payment")}>
+                      <Badge value={item.payment_status} payment />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         ) : (
           <EmptyState title={t("m360.noMemberships")} hint={t("m360.noMembershipsHint")} />
         )}
       </section>
 
-      <section className="panel member-360-section">
+      <section className="panel table-wrap">
         <div className="panel-heading">
           <h3>{t("m360.payments")}</h3>
+          <span className="member-360-count">{data.payments.length}</span>
         </div>
         {data.payments.length ? (
-          data.payments.map((payment) => {
-            const planName = paymentByMembership.get(payment.membership_id);
-            return (
-              <article className="member-360-card" key={payment.id}>
-                <div className="member-360-card-head is-row">
-                  <span className="eyebrow">
-                    {planName || t("m360.membershipRef", { id: payment.membership_id })}
-                  </span>
-                  <h3>{payment.receipt_number || t("cash.receipt")}</h3>
-                  <strong className="member-360-amount">{money(payment.amount)}</strong>
-                </div>
-                <div className="info-list">
-                  <p>
-                    <span>{t("cash.date")}</span>
-                    <strong>{`${date(payment.received_at)} · ${clock(payment.received_at)}`}</strong>
-                  </p>
-                  <p>
-                    <span>{t("cash.receivedBy")}</span>
-                    <strong>{payment.received_by || "—"}</strong>
-                  </p>
-                  <p>
-                    <span>{t("cash.method")}</span>
-                    <strong>{payment.payment_method === "cash" ? t("cash.cash") : payment.payment_method || "—"}</strong>
-                  </p>
-                  {payment.remaining_balance != null ? (
-                    <p>
-                      <span>{t("members.stillOwes")}</span>
-                      <strong>{money(payment.remaining_balance)}</strong>
-                    </p>
-                  ) : null}
-                </div>
-                {payment.notes ? <p className="member-360-note">{payment.notes}</p> : null}
-              </article>
-            );
-          })
+          <table>
+            <thead>
+              <tr>
+                <th>{t("cash.receipt")}</th>
+                <th>{t("memberships.plan")}</th>
+                <th>{t("cash.date")}</th>
+                <th>{t("cash.receivedBy")}</th>
+                <th>{t("cash.method")}</th>
+                <th>{t("members.paidCol")}</th>
+                <th>{t("members.stillOwes")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.payments.map((payment) => {
+                const remaining = payment.remaining_balance == null ? null : Number(payment.remaining_balance);
+                return (
+                  <tr className="record-card" key={payment.id}>
+                    <td className="record-name" data-label={t("cash.receipt")}>
+                      <strong>{payment.receipt_number || t("cash.receipt")}</strong>
+                      {payment.notes ? <span className="record-remain">{payment.notes}</span> : null}
+                    </td>
+                    <td className="record-plan" data-label={t("memberships.plan")}>
+                      {paymentByMembership.get(payment.membership_id) || t("m360.membershipRef", { id: payment.membership_id })}
+                    </td>
+                    <td data-label={t("cash.date")}>{`${date(payment.received_at)} · ${clock(payment.received_at)}`}</td>
+                    <td data-label={t("cash.receivedBy")}>{payment.received_by || "—"}</td>
+                    <td data-label={t("cash.method")}>
+                      {payment.payment_method === "cash" ? t("cash.cash") : payment.payment_method || "—"}
+                    </td>
+                    <td className="record-paid" data-label={t("members.paidCol")}>{money(payment.amount)}</td>
+                    <td className="record-owing table-money" data-label={t("members.stillOwes")}>
+                      {remaining == null ? "—" : (
+                        <strong className={remaining > 0 ? "amount-owing" : "amount-settled"}>
+                          {remaining > 0 ? money(remaining) : t("members.settled")}
+                        </strong>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         ) : (
           <EmptyState title={t("m360.noPayments")} hint={t("m360.noPaymentsHint")} />
         )}
       </section>
 
-      <section className="panel member-360-section">
+      <section className="panel table-wrap">
         <div className="panel-heading">
           <div>
             <h3>{t("m360.attendance")}</h3>
             {data.attendance.length >= 50 ? <p>{t("m360.attendanceHint")}</p> : null}
           </div>
+          <span className="member-360-count">{data.attendance.length}</span>
         </div>
         {data.attendance.length ? (
-          data.attendance.map((visit) => {
-            const duration = visitDurationLabel(visit.checked_in_at, visit.checked_out_at, t);
-            return (
-              <article className="member-360-card" key={visit.id}>
-                <div className="member-360-card-head">
-                  <div>
-                    {visit.class_name ? <span className="eyebrow">{visit.class_name}</span> : null}
-                    <h3>{date(visit.checked_in_at)}</h3>
-                  </div>
-                  {visit.is_inside ? (
-                    <div className="membership-details-badges">
-                      <Badge value="active" />
-                    </div>
-                  ) : null}
-                </div>
-                <div className="info-list">
-                  <p>
-                    <span>{t("att.inAt")}</span>
-                    <strong>{clock(visit.checked_in_at)}</strong>
-                  </p>
-                  <p>
-                    <span>{t("att.outAt")}</span>
-                    <strong>
-                      {visit.checked_out_at ? clock(visit.checked_out_at) : visit.is_inside ? t("m360.stillInside") : "—"}
-                    </strong>
-                  </p>
-                  {duration ? (
-                    <p>
-                      <span>{t("m360.duration")}</span>
-                      <strong>{duration}</strong>
-                    </p>
-                  ) : null}
-                </div>
-              </article>
-            );
-          })
+          <table>
+            <thead>
+              <tr>
+                <th>{t("cal.date")}</th>
+                <th>{t("members.class")}</th>
+                <th>{t("att.inAt")}</th>
+                <th>{t("att.outAt")}</th>
+                <th>{t("m360.duration")}</th>
+                <th>{t("common.status")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.attendance.map((visit) => (
+                <tr className="record-card" key={visit.id}>
+                  <td className="record-name" data-label={t("cal.date")}>
+                    <strong>{date(visit.checked_in_at)}</strong>
+                  </td>
+                  <td className="record-plan" data-label={t("members.class")}>
+                    {visit.class_name || t("att.noClass")}
+                  </td>
+                  <td data-label={t("att.inAt")}>{clock(visit.checked_in_at)}</td>
+                  <td data-label={t("att.outAt")}>
+                    {visit.checked_out_at ? clock(visit.checked_out_at) : visit.is_inside ? t("m360.stillInside") : "—"}
+                  </td>
+                  <td data-label={t("m360.duration")}>
+                    {visitDurationLabel(visit.checked_in_at, visit.checked_out_at, t) || "—"}
+                  </td>
+                  <td data-label={t("common.status")}>
+                    {visit.is_inside ? <Badge value="active" /> : t("m360.left")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : (
           <EmptyState title={t("m360.noAttendance")} hint={t("m360.noAttendanceHint")} />
         )}
       </section>
 
-      <section className="panel member-360-section">
+      <section className="panel form-panel">
         <div className="panel-heading">
           <h3>{t("m360.reminder")}</h3>
+          {data.reminder ? (
+            <div className="membership-details-badges">
+              <Badge value={data.reminder.status} />
+              <Badge value={data.reminder.payment_status} payment />
+            </div>
+          ) : null}
         </div>
         {data.reminder ? (
-          <article className="member-360-card">
-            <div className="member-360-card-head">
-              <div>
-                <h3>{reasonLabel(data.reminder.reasons[0] || data.reminder.status, t)}</h3>
-              </div>
-              <div className="membership-details-badges">
-                <Badge value={data.reminder.status} />
-                <Badge value={data.reminder.payment_status} payment />
-              </div>
-            </div>
+          <>
             <div className="info-list">
               <p>
                 <span>{t("remind.ends")}</span>
@@ -4417,6 +4472,12 @@ function Member360Page({
               <p>
                 <span>{t("remind.stillOwes")}</span>
                 <strong>{money(data.reminder.remaining)}</strong>
+              </p>
+              <p>
+                <span>{t("common.status")}</span>
+                <strong>
+                  {reasonLabel(data.reminder.reasons[0] || data.reminder.status, t)}
+                </strong>
               </p>
               {data.reminder.last_sent_at ? (
                 <p>
@@ -4440,7 +4501,7 @@ function Member360Page({
                 <span className="field-hint">{t("remind.addPhone")}</span>
               )}
             </div>
-          </article>
+          </>
         ) : (
           <EmptyState title={t("m360.noReminder")} hint={t("m360.noReminderHint")} />
         )}
@@ -4987,12 +5048,19 @@ function Members({
               const membership = membershipFor(member.id);
               const memberStatus = memberStatuses[member.id];
               const remaining = Number(membership?.remaining_balance || 0);
+              const status = memberStatus || membership?.status;
+              const isActive = status === "active";
               return (
                 <tr className="record-card record-card-member" key={member.id} onClick={() => onOpenProfile(member.id)}>
                   <td className="record-name" data-label={t("dash.member")}>
-                    <strong>{member.name}</strong>
+                    <span className="record-name-line">
+                      {isActive ? (
+                        <span className="status-dot" title={t("status.active")} aria-label={t("status.active")} />
+                      ) : null}
+                      <strong>{member.name}</strong>
+                    </span>
                     {membership ? (
-                      <Badge value={memberStatus || membership.status} />
+                      isActive || !status ? null : <Badge value={status} />
                     ) : (
                       <span className="status expired">{t("members.noPlan")}</span>
                     )}
@@ -5009,10 +5077,6 @@ function Members({
                         {membershipRemainLabel(membership.end_date, memberStatus || membership.status, t)}
                       </span>
                     ) : null}
-                    <small>
-                      {member.id_number ? `CIN ${member.id_number}` : t("members.noCin")}
-                      {member.phone ? ` · ${member.phone}` : ""}
-                    </small>
                   </td>
                   <td className="record-plan" data-label={t("members.class")}>{member.class_name || t("members.noClass")}</td>
                   <td className="record-price" data-label={t("members.price")}>{membership ? money(membership.price) : "—"}</td>
@@ -5101,13 +5165,17 @@ function Members({
 
 function ClassesPage({
   classes,
+  trainers,
   canAdminister,
+  canManageSchedules,
   onCreate,
   onUpdate,
   onDelete,
 }: {
   classes: FitnessClass[];
+  trainers: Trainer[];
   canAdminister: boolean;
+  canManageSchedules: boolean;
   onCreate: (payload: {
     name: string;
     class_type: string;
@@ -5126,6 +5194,7 @@ function ClassesPage({
   onDelete: (id: number) => Promise<boolean> | void;
 }) {
   const { t } = useLang();
+  const [section, setSection] = useState<"classes" | "calendar">("classes");
   const emptyForm = {
     name: "",
     class_type: "boxing",
@@ -5203,9 +5272,17 @@ function ClassesPage({
       <PageHeader
         eyebrow={t("class.eyebrow")}
         title={t("class.title")}
-        description={canAdminister ? t("class.intro") : t("class.staff")}
+        description={
+          section === "calendar"
+            ? canAdminister
+              ? t("cal.intro")
+              : t("cal.staff")
+            : canAdminister
+              ? t("class.intro")
+              : t("class.staff")
+        }
         actions={
-          canAdminister ? (
+          canAdminister && section === "classes" ? (
             <button
               type="button"
               className="primary"
@@ -5218,6 +5295,32 @@ function ClassesPage({
           ) : undefined
         }
       />
+      <div className="toolbar class-page-toolbar">
+        <div className="class-view-switch" role="tablist" aria-label={t("nav.classes")}>
+          <button
+            type="button"
+            className={`class-view-switch-btn${section === "classes" ? " active" : ""}`}
+            onClick={() => setSection("classes")}
+          >
+            {t("cal.classes")}
+          </button>
+          <button
+            type="button"
+            className={`class-view-switch-btn${section === "calendar" ? " active" : ""}`}
+            onClick={() => setSection("calendar")}
+          >
+            {t("cal.calendar")}
+          </button>
+        </div>
+      </div>
+      {section === "calendar" ? (
+        <ClassCalendar
+          classes={classes}
+          trainers={trainers}
+          canManageSchedules={canManageSchedules}
+        />
+      ) : (
+      <>
       {open && canAdminister && (
         <section className="panel form-panel">
           <span className="eyebrow">{editing ? t("class.editHead") : t("class.create")}</span>
@@ -5355,6 +5458,8 @@ function ClassesPage({
         </section>
       ) : (
         <div className="panel empty">{t("class.empty")}</div>
+      )}
+      </>
       )}
     </div>
   );
@@ -5703,8 +5808,13 @@ function Memberships({
               return (
               <tr className="record-card" key={item.id} onClick={() => showMembershipDetails(item)}>
                 <td className="record-name" data-label={t("dash.member")}>
-                  <strong>{memberName(item.member_id)}</strong>
-                  <Badge value={item.status} />
+                  <span className="record-name-line">
+                    {item.status === "active" ? (
+                      <span className="status-dot" title={t("status.active")} aria-label={t("status.active")} />
+                    ) : null}
+                    <strong>{memberName(item.member_id)}</strong>
+                  </span>
+                  {item.status === "active" ? null : <Badge value={item.status} />}
                 </td>
                 <td className="record-plan" data-label={t("memberships.plan")}>{planName(item.plan_id)}</td>
                 <td className="record-period" data-label={t("memberships.period")}>
@@ -6559,6 +6669,7 @@ function AttendancePage({
   classes,
   onCheckIn,
   onCheckOut,
+  onOpenProfile,
 }: {
   records: Attendance[];
   members: Member[];
@@ -6566,6 +6677,7 @@ function AttendancePage({
   classes: FitnessClass[];
   onCheckIn: (id: number) => Promise<boolean> | void;
   onCheckOut: (id: number) => Promise<boolean> | void;
+  onOpenProfile: (id: number) => void;
 }) {
   const { t } = useLang();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -6574,6 +6686,7 @@ function AttendancePage({
   const [matches, setMatches] = useState<Member[]>([]);
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupError, setLookupError] = useState("");
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -6744,10 +6857,27 @@ function AttendancePage({
             spellCheck={false}
           />
         </div>
-        <button className="primary" type="submit" disabled={lookupBusy || !query.trim()}>
-          <QrCode size={16} /> {t("att.find")}
+        <button className="secondary" type="submit" disabled={lookupBusy || !query.trim()}>
+          <Search size={16} /> {t("att.find")}
+        </button>
+        <button className="primary att-scan-qr" type="button" onClick={() => setScannerOpen(true)}>
+          <QrCode size={18} />
+          <span>{t("qr.scan")}</span>
         </button>
       </form>
+      {scannerOpen ? (
+        <MemberQrScanner
+          isInside={(id) => Boolean(insideVisit(id))}
+          canCheckIn={(id) => canEnter(id)}
+          onCheckIn={onCheckIn}
+          onCheckOut={onCheckOut}
+          onOpenProfile={(id) => {
+            setScannerOpen(false);
+            onOpenProfile(id);
+          }}
+          onClose={() => setScannerOpen(false)}
+        />
+      ) : null}
       {lookupError && <div className="error app-banner">{lookupError}</div>}
       {Boolean(matches.length) && (
         <section className="panel desk-matches">
