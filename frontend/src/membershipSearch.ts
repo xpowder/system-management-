@@ -6,6 +6,7 @@ export function membershipFrom360(item: Member360Membership): Membership {
   return {
     id: item.id,
     member_id: item.member_id,
+    member_name: item.member_name,
     plan_id: item.plan_id,
     start_date: item.start_date,
     end_date: item.end_date,

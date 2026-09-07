@@ -193,7 +193,6 @@ def seed() -> None:
             amount=Decimal("100.00"),
             received_by="seed",
             notes="Initial QA balance",
-            idempotency_key="seed-pay-balance-100",
         )
     ensure_membership(search_member, "Searchable membership")
     ensure_membership(twin_a, "Twin A")

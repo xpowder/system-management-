@@ -705,7 +705,7 @@ const en = {
   "ns.user_role_changed": "User role changed",
   "ns.user_deactivated": "User deactivated",
   "ns.important_system_alerts": "Important system alerts",
-  "list.showMore": "Show more",
+  "list.showMore": "See more",
   "list.shown": "{shown} of {total}",
   "backup.confirm": "Restore this backup? New members, memberships and payments will be created.",
   "backup.tooBig": "Backup file is too large (max 4 MB).",

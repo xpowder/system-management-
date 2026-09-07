@@ -19,7 +19,7 @@ export interface Member {
 }
 export interface FitnessClass { id: number; name: string; class_type: string; price_per_member: string | number; member_count: number; team_total: string | number; is_active: boolean }
 export interface Plan { id: number; name: string; duration_months: number; price: string | number; description: string; is_active: boolean; member_count: number }
-export interface Membership { id: number; member_id: number; plan_id: number; start_date: string; end_date: string; price: string | number; status: MembershipStatus; payment_status: GymPaymentStatus; total_paid: string | number; remaining_balance: string | number; notes?: string }
+export interface Membership { id: number; member_id: number; member_name?: string; plan_id: number; start_date: string; end_date: string; price: string | number; status: MembershipStatus; payment_status: GymPaymentStatus; total_paid: string | number; remaining_balance: string | number; notes?: string }
 
 export interface PageMeta {
   total: number
@@ -214,6 +214,7 @@ export interface Member360Member extends Member {
 export interface Member360Membership {
   id: number
   member_id: number
+  member_name?: string
   plan_id: number
   plan: Member360Plan
   start_date: string

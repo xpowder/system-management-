@@ -779,21 +779,24 @@ function visitDurationLabel(
 }
 
 const PAGE_SIZE = 40;
+const LIST_PAGE_SIZE = 15;
 
 function LoadMoreBar({
   shown,
   total,
   onMore,
   loading,
+  pageSize = LIST_PAGE_SIZE,
 }: {
   shown: number;
   total: number;
   onMore: () => void;
   loading?: boolean;
+  pageSize?: number;
 }) {
   const { t } = useLang();
   if (total <= 0) return null;
-  if (total <= shown && shown <= PAGE_SIZE) return null;
+  if (shown >= total && total <= pageSize) return null;
   return (
     <div className="load-more">
       <span>{t("list.shown", { shown: Math.min(shown, total), total })}</span>
@@ -1519,7 +1522,8 @@ export default function GymApp({
     for (const plan of plans) map.set(plan.id, plan);
     return map;
   }, [plans]);
-  const memberName = (id: number) => memberById.get(id)?.name || t("members.unknown");
+  const memberName = (id: number, fallback = "") =>
+    memberById.get(id)?.name || fallback || t("members.unknown");
   const planName = (id: number) => planById.get(id)?.name || `Plan #${id}`;
   const filteredMembers = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -5322,12 +5326,13 @@ function Members({
       return true;
     });
   }, [people, memberStatuses, statusFilter, classFilter, paymentFilter, membershipByMemberId]);
-  const [shown, setShown] = useState(PAGE_SIZE);
+  const [shown, setShown] = useState(LIST_PAGE_SIZE);
   const [importing, setImporting] = useState(false);
   useEffect(() => {
-    setShown(PAGE_SIZE);
-  }, [query, statusFilter, classFilter, paymentFilter, people.length]);
-  const pagedPeople = serverTotal != null ? visiblePeople : visiblePeople.slice(0, shown);
+    setShown(LIST_PAGE_SIZE);
+  }, [query, statusFilter, classFilter, paymentFilter]);
+  const pagedPeople = visiblePeople.slice(0, shown);
+  const peopleTotal = paymentFilter ? visiblePeople.length : (serverTotal ?? visiblePeople.length);
 
   const closeForm = () => {
     setOpen(false);
@@ -5782,12 +5787,14 @@ function Members({
           </tbody>
         </table>
         <LoadMoreBar
-          shown={visiblePeople.length}
-          total={serverTotal ?? visiblePeople.length}
+          shown={pagedPeople.length}
+          total={peopleTotal}
           loading={loadingMore}
           onMore={() => {
-            if (onLoadMore && (serverTotal ?? 0) > people.length) onLoadMore();
-            else setShown((n) => n + PAGE_SIZE);
+            if (shown >= visiblePeople.length && onLoadMore && (serverTotal ?? 0) > people.length && !paymentFilter) {
+              onLoadMore();
+            }
+            setShown((n) => n + LIST_PAGE_SIZE);
           }}
         />
         {!visiblePeople.length && (
@@ -6192,11 +6199,12 @@ function Memberships({
       return true;
     });
   }, [items, paymentFilter]);
-  const [shown, setShown] = useState(PAGE_SIZE);
+  const [shown, setShown] = useState(LIST_PAGE_SIZE);
   useEffect(() => {
-    setShown(PAGE_SIZE);
-  }, [query, status, paymentFilter, items.length]);
-  const pagedItems = serverTotal != null ? visibleItems : visibleItems.slice(0, shown);
+    setShown(LIST_PAGE_SIZE);
+  }, [query, status, paymentFilter]);
+  const pagedItems = visibleItems.slice(0, shown);
+  const membershipsListTotal = paymentFilter ? visibleItems.length : (serverTotal ?? visibleItems.length);
   const [selectedMembership, setSelectedMembership] = useState<Membership | null>(null);
   const [membershipView, setMembershipView] = useState<"details" | "renew" | "confirmDelete">("details");
   const [renewSaving, setRenewSaving] = useState(false);
@@ -6574,7 +6582,7 @@ function Memberships({
                     {item.status === "active" ? (
                       <span className="status-dot" title={t("status.active")} aria-label={t("status.active")} />
                     ) : null}
-                    <strong>{memberName(item.member_id)}</strong>
+                    <strong>{item.member_name || memberName(item.member_id)}</strong>
                   </span>
                   {item.status === "active" ? null : <Badge value={item.status} />}
                 </td>
@@ -6637,12 +6645,14 @@ function Memberships({
           </tbody>
         </table>
         <LoadMoreBar
-          shown={visibleItems.length}
-          total={serverTotal ?? visibleItems.length}
+          shown={pagedItems.length}
+          total={membershipsListTotal}
           loading={loadingMore}
           onMore={() => {
-            if (onLoadMore && (serverTotal ?? 0) > items.length) onLoadMore();
-            else setShown((n) => n + PAGE_SIZE);
+            if (shown >= visibleItems.length && onLoadMore && (serverTotal ?? 0) > items.length && !paymentFilter) {
+              onLoadMore();
+            }
+            setShown((n) => n + LIST_PAGE_SIZE);
           }}
         />
         {!visibleItems.length && (
