@@ -1,4 +1,4 @@
-﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type FormEvent } from "react";
+﻿import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity,
@@ -46,7 +46,6 @@ import {
   type Member,
   type Membership,
   type Member360,
-  type Member360Membership,
   type MonthlyOverview,
   type GymNotification,
   type Plan,
@@ -54,13 +53,15 @@ import {
   type TrainerPayrollReport,
   type WhatsAppReminder,
   type WhatsAppReminderList,
+  collectAllPages,
 } from "./gymApi";
-import { bookingApi, type AdminUser, type AuthUser } from "./api";
+import { newPaymentAttemptId } from "./paymentAttempt";
+import { bookingApi, isAbortError, type AdminUser, type AuthUser } from "./api";
 import { MemberQrScanner } from "./MemberQrScanner";
 import { can, isAdminOnlyNotification, isGymAdmin, isGymDesk } from "./permissions";
 import { clock, date, LanguageSwitch, localeFor, money, monthLabel, statusLabel, todayLabel, useLang, type Msg } from "./i18n";
 import { Alert, EmptyState, Field, FieldGrid, FormSection, LoadingState, PageHeader, PhoneField } from "./ui";
-import { ClassCalendar } from "./ClassCalendar";
+import { membershipFrom360, resolveMembershipsByMemberSearch } from "./membershipSearch";
 import { MemberQrCard } from "./MemberQrCard";
 import { ThemeSwitch } from "./theme";
 import { playNotificationSound, unlockNotificationSound } from "./notificationSound";
@@ -72,6 +73,7 @@ type PaymentPayload = {
   received_by: string;
   notes: string;
   remaining?: number;
+  idempotency_key?: string;
 };
 
 type OnPayment = (
@@ -243,6 +245,8 @@ function RecordPaymentOverlay({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const amountRef = useRef<HTMLInputElement>(null);
+  const attemptKeyRef = useRef("");
+  const attemptAmountRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!settled) amountRef.current?.focus();
@@ -267,6 +271,12 @@ function RecordPaymentOverlay({
       setError(t("pay.exceeds", { amount: money(remaining) }));
       return;
     }
+    if (attemptAmountRef.current !== parsedAmount) {
+      attemptKeyRef.current = newPaymentAttemptId();
+      attemptAmountRef.current = parsedAmount;
+    } else if (!attemptKeyRef.current) {
+      attemptKeyRef.current = newPaymentAttemptId();
+    }
     setError("");
     setSaving(true);
     try {
@@ -274,7 +284,10 @@ function RecordPaymentOverlay({
         amount: parsedAmount,
         received_by: loggedInStaffName,
         notes: notes.trim() || t("pay.note"),
+        idempotency_key: attemptKeyRef.current,
       });
+      attemptKeyRef.current = "";
+      attemptAmountRef.current = null;
       onClose();
     } catch (e) {
       setError(e instanceof Error && e.message && e.message !== "[object Object]" ? e.message : t("pay.fail"));
@@ -726,21 +739,9 @@ function EditMemberOverlay({
   );
 }
 
-function membershipFrom360(item: Member360Membership): Membership {
-  return {
-    id: item.id,
-    member_id: item.member_id,
-    plan_id: item.plan_id,
-    start_date: item.start_date,
-    end_date: item.end_date,
-    price: item.price,
-    status: item.status as Membership["status"],
-    payment_status: item.payment_status as Membership["payment_status"],
-    total_paid: item.total_paid,
-    remaining_balance: item.remaining_balance,
-    notes: item.notes,
-  };
-}
+const ClassCalendar = lazy(() =>
+  import("./ClassCalendar").then((module) => ({ default: module.ClassCalendar })),
+);
 
 function isCurrentMembershipStatus(status: string) {
   return status === "active" || status === "expiring_soon";
@@ -783,23 +784,42 @@ function LoadMoreBar({
   shown,
   total,
   onMore,
+  loading,
 }: {
   shown: number;
   total: number;
   onMore: () => void;
+  loading?: boolean;
 }) {
   const { t } = useLang();
-  if (total <= PAGE_SIZE) return null;
+  if (total <= 0) return null;
+  if (total <= shown && shown <= PAGE_SIZE) return null;
   return (
     <div className="load-more">
       <span>{t("list.shown", { shown: Math.min(shown, total), total })}</span>
       {shown < total && (
-        <button type="button" className="secondary" onClick={onMore}>
-          {t("list.showMore")}
+        <button type="button" className="secondary" disabled={loading} onClick={onMore}>
+          {loading ? t("common.loading") : t("list.showMore")}
         </button>
       )}
     </div>
   );
+}
+
+function mergeById<T extends { id: number }>(current: T[], incoming: T[]) {
+  if (!current.length) return incoming;
+  const seen = new Set(current.map((item) => item.id));
+  const next = current.slice();
+  incoming.forEach((item) => {
+    if (seen.has(item.id)) {
+      const index = next.findIndex((row) => row.id === item.id);
+      if (index >= 0) next[index] = item;
+      return;
+    }
+    seen.add(item.id);
+    next.push(item);
+  });
+  return next;
 }
 
 function isSafeWhatsAppUrl(url: string) {
@@ -1078,7 +1098,8 @@ export default function GymApp({
     if (!canUseDesk) return
     const requestId = ++notificationLoadSeq.current
     try {
-      const items = await gymApi.notifications('', false)
+      const page = await gymApi.notifications('', false, { limit: 50, offset: 0 })
+      const items = page.items
       if (requestId !== notificationLoadSeq.current) return
       if (!skipNotificationToast.current && !options?.silent) {
         const incoming = items.filter(item =>
@@ -1267,6 +1288,11 @@ export default function GymApp({
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [payments, setPayments] = useState<GymPayment[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [membersTotal, setMembersTotal] = useState(0);
+  const [membershipsTotal, setMembershipsTotal] = useState(0);
+  const [paymentsTotal, setPaymentsTotal] = useState(0);
+  const [attendanceTotal, setAttendanceTotal] = useState(0);
+  const [listLoadingMore, setListLoadingMore] = useState("");
   const [trainers, setTrainers] = useState<Trainer[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
@@ -1289,31 +1315,50 @@ export default function GymApp({
     try {
       const [
         stats,
-        people,
+        peoplePage,
         classList,
         planList,
-        membershipList,
-        paymentList,
-        attendanceList,
+        membershipPage,
+        paymentPage,
+        attendancePage,
         trainerList,
       ] = await Promise.all([
         gymApi.dashboard(),
-        gymApi.members(),
+        gymApi.members({ search: page === "members" ? query.trim() : "", limit: PAGE_SIZE, offset: 0 }),
         gymApi.classes(),
         gymApi.plans(),
-        gymApi.memberships(),
-        gymApi.payments(),
-        gymApi.attendance(),
+        page === "memberships" && query.trim()
+          ? resolveMembershipsByMemberSearch({
+              search: query.trim(),
+              status,
+              members: gymApi.members,
+              member360: gymApi.member360,
+            }).then((result) => ({
+              items: result.memberships,
+              total: result.total,
+              extraMembers: result.members,
+            }))
+          : gymApi.memberships({ status: page === "memberships" ? status : "", limit: PAGE_SIZE, offset: 0 }).then((next) => ({
+              items: next.items,
+              total: next.total,
+              extraMembers: [] as Member[],
+            })),
+        gymApi.payments({ limit: PAGE_SIZE, offset: 0 }),
+        gymApi.attendance({ limit: PAGE_SIZE, offset: 0 }),
         canAdminister ? gymApi.trainers() : Promise.resolve([]),
       ]);
       if (requestId !== loadSeq.current) return;
       setDashboard(stats);
-      setMembers(people);
+      setMembers(membershipPage.extraMembers.length ? mergeById(peoplePage.items, membershipPage.extraMembers) : peoplePage.items);
+      setMembersTotal(peoplePage.total);
       setClasses(classList);
       setPlans(planList);
-      setMemberships(membershipList);
-      setPayments(paymentList);
-      setAttendance(attendanceList);
+      setMemberships(membershipPage.items);
+      setMembershipsTotal(membershipPage.total);
+      setPayments(paymentPage.items);
+      setPaymentsTotal(paymentPage.total);
+      setAttendance(attendancePage.items);
+      setAttendanceTotal(attendancePage.total);
       setTrainers(trainerList);
       if (quiet) void refreshNotifications({ silent: true });
       else await refreshNotifications();
@@ -1347,6 +1392,99 @@ export default function GymApp({
   useEffect(() => {
     void load();
   }, []);
+
+  const membersSearchSeq = useRef(0);
+  useEffect(() => {
+    if (page !== "members") return;
+    const requestId = ++membersSearchSeq.current;
+    const timer = window.setTimeout(() => {
+      void gymApi
+        .members({ search: query.trim(), limit: PAGE_SIZE, offset: 0 })
+        .then((next) => {
+          if (requestId !== membersSearchSeq.current) return;
+          setMembers(next.items);
+          setMembersTotal(next.total);
+        })
+        .catch((e) => {
+          if (requestId !== membersSearchSeq.current) return;
+          setError(e instanceof Error ? e.message : t("loadFail"));
+        });
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [page, query, t]);
+
+  const membershipsFilterSeq = useRef(0);
+  useEffect(() => {
+    if (page !== "memberships") return;
+    const requestId = ++membershipsFilterSeq.current;
+    const controller = new AbortController();
+    const needle = query.trim();
+    const timer = window.setTimeout(() => {
+      const run = needle
+        ? resolveMembershipsByMemberSearch({
+            search: needle,
+            status,
+            signal: controller.signal,
+            members: gymApi.members,
+            member360: gymApi.member360,
+          }).then((result) => ({
+            items: result.memberships,
+            total: result.total,
+            extraMembers: result.members,
+          }))
+        : gymApi.memberships({ status, limit: PAGE_SIZE, offset: 0, signal: controller.signal }).then((next) => ({
+            items: next.items,
+            total: next.total,
+            extraMembers: [] as Member[],
+          }));
+      void run
+        .then((next) => {
+          if (requestId !== membershipsFilterSeq.current) return;
+          setMemberships(next.items);
+          setMembershipsTotal(next.total);
+          if (next.extraMembers.length) {
+            setMembers((current) => mergeById(current, next.extraMembers));
+          }
+        })
+        .catch((e) => {
+          if (isAbortError(e) || requestId !== membershipsFilterSeq.current) return;
+          setError(e instanceof Error ? e.message : t("loadFail"));
+        });
+    }, needle ? 280 : 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [page, status, query, t]);
+
+  const loadMoreList = async (kind: "members" | "memberships" | "payments" | "attendance") => {
+    if (listLoadingMore) return;
+    if (kind === "memberships" && query.trim()) return;
+    setListLoadingMore(kind);
+    try {
+      if (kind === "members") {
+        const next = await gymApi.members({ search: query.trim(), limit: PAGE_SIZE, offset: members.length });
+        setMembers((current) => mergeById(current, next.items));
+        setMembersTotal(next.total);
+      } else if (kind === "memberships") {
+        const next = await gymApi.memberships({ status, limit: PAGE_SIZE, offset: memberships.length });
+        setMemberships((current) => mergeById(current, next.items));
+        setMembershipsTotal(next.total);
+      } else if (kind === "payments") {
+        const next = await gymApi.payments({ limit: PAGE_SIZE, offset: payments.length });
+        setPayments((current) => mergeById(current, next.items));
+        setPaymentsTotal(next.total);
+      } else {
+        const next = await gymApi.attendance({ limit: PAGE_SIZE, offset: attendance.length });
+        setAttendance((current) => mergeById(current, next.items));
+        setAttendanceTotal(next.total);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("loadFail"));
+    } finally {
+      setListLoadingMore("");
+    }
+  };
 
   const go = (next: Page, options?: { status?: string }) => {
     if (!canUseDesk) return;
@@ -1393,15 +1531,9 @@ export default function GymApp({
     );
   }, [members, query]);
   const filteredMemberships = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return memberships.filter((item) => {
-      if (status && item.status !== status) return false;
-      if (!needle) return true;
-      const name = memberName(item.member_id);
-      const plan = planById.get(item.plan_id)?.name || `Plan #${item.plan_id}`;
-      return `${name} ${plan}`.toLowerCase().includes(needle);
-    });
-  }, [memberships, status, query, memberById, planById, memberName]);
+    if (!status) return memberships;
+    return memberships.filter((item) => item.status === status);
+  }, [memberships, status]);
 
   const checkIn = async (id: number) => {
     return mutate(async () => {
@@ -1484,6 +1616,7 @@ export default function GymApp({
                 ? t("pay.cashNoteRemain", { n: remaining ?? 0 })
                 : t("pay.cashNote"),
               remaining,
+              idempotency_key: newPaymentAttemptId(),
             });
           }
         })(),
@@ -1744,6 +1877,14 @@ export default function GymApp({
     }, t("membership.deleteFail"));
   };
 
+  const cancelMembership = async (membershipId: number) => {
+    return mutate(async () => {
+      const updated = await gymApi.cancelMembership(membershipId);
+      setMemberships((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      afterSave(t("membership.cancelled"));
+    }, t("membership.cancelFail"));
+  };
+
   const setMembershipPaymentStatus = async (membership: Membership, status: "paid" | "unpaid") => {
     return mutate(async () => {
       const updated = await gymApi.updatePaymentStatus(membership.id, status)
@@ -1759,7 +1900,10 @@ export default function GymApp({
     if (savingRef.current) throw new Error(t("pay.fail"));
     savingRef.current = true;
     try {
-      const payment = await gymApi.payment(membershipId, payload);
+      const payment = await gymApi.payment(membershipId, {
+        ...payload,
+        idempotency_key: payload.idempotency_key || newPaymentAttemptId(),
+      });
       afterSave(t("pay.ok"));
       return payment;
     } catch (e) {
@@ -2009,6 +2153,9 @@ export default function GymApp({
             classes={classes}
             plans={plans}
             memberships={memberships}
+            serverTotal={membersTotal}
+            loadingMore={listLoadingMore === "members"}
+            onLoadMore={() => void loadMoreList("members")}
             onCreate={createMember}
             onUpdate={updateMember}
             onOpenProfile={openMember360}
@@ -2016,6 +2163,7 @@ export default function GymApp({
         )}
         {page === "member360" && member360Id && (
           <Member360Page
+            key={member360Id}
             memberId={member360Id}
             classes={classes}
             plans={plans}
@@ -2052,9 +2200,13 @@ export default function GymApp({
             memberName={memberName}
             planName={planName}
             plans={plans}
+            serverTotal={membershipsTotal}
+            loadingMore={listLoadingMore === "memberships"}
+            onLoadMore={query.trim() ? undefined : () => void loadMoreList("memberships")}
             onRenew={renewMembership}
             onUpdate={updateMembership}
             onDelete={deleteMembership}
+            onCancel={cancelMembership}
             onSetPaymentStatus={setMembershipPaymentStatus}
             onPayment={recordPayment}
           />
@@ -2073,6 +2225,9 @@ export default function GymApp({
             payments={payments}
             memberships={memberships}
             members={members}
+            serverTotal={paymentsTotal}
+            loadingMore={listLoadingMore === "payments"}
+            onLoadMore={() => void loadMoreList("payments")}
             onPayment={recordPayment}
           />
         )}
@@ -2082,6 +2237,9 @@ export default function GymApp({
             members={members}
             memberships={memberships}
             classes={classes}
+            serverTotal={attendanceTotal}
+            loadingMore={listLoadingMore === "attendance"}
+            onLoadMore={() => void loadMoreList("attendance")}
             onCheckIn={checkIn}
             onCheckOut={checkOut}
             onOpenProfile={openMember360}
@@ -2285,22 +2443,24 @@ function Dashboard({
   useEffect(() => {
     if (!isIsoDate(selectedDate)) return;
     const requestId = ++summarySeq.current;
+    const controller = new AbortController();
     setSummaryLoading(true);
     setSummaryError("");
     void gymApi
-      .dashboardSummary(selectedDate)
+      .dashboardSummary(selectedDate, { signal: controller.signal })
       .then((payload) => {
         if (requestId !== summarySeq.current) return;
         setSummary(payload);
         setSummaryDate(selectedDate);
       })
       .catch((e) => {
-        if (requestId !== summarySeq.current) return;
+        if (requestId !== summarySeq.current || controller.signal.aborted) return;
         setSummaryError(e instanceof Error ? e.message : t("dash.summaryFail"));
       })
       .finally(() => {
         if (requestId === summarySeq.current) setSummaryLoading(false);
       });
+    return () => controller.abort();
   }, [selectedDate, t]);
 
   const visibleSummary = summaryDate === selectedDate ? summary : null;
@@ -3525,7 +3685,7 @@ function Administration({
       setAccountError(t("admin.passwordFail"));
       return;
     }
-    if (passwords.next.length < 8) {
+    if (passwords.next.length < 10) {
       setAccountError(t("admin.passwordShort"));
       return;
     }
@@ -3777,7 +3937,7 @@ function Administration({
             <Field label={t("admin.newPassword")}>
               <input
                 type="password"
-                minLength={8}
+                minLength={10}
                 autoComplete="new-password"
                 value={passwords.next}
                 onChange={(event) => setPasswords({ ...passwords, next: event.target.value })}
@@ -3786,7 +3946,7 @@ function Administration({
             <Field label={t("admin.confirm")} wide>
               <input
                 type="password"
-                minLength={8}
+                minLength={10}
                 autoComplete="new-password"
                 value={passwords.confirm}
                 onChange={(event) => setPasswords({ ...passwords, confirm: event.target.value })}
@@ -4461,17 +4621,17 @@ function Member360Page({
   const [deleting, setDeleting] = useState(false);
   const loadSeq = useRef(0);
 
-  const load = async () => {
+  const load = async (signal?: AbortSignal) => {
     const requestId = ++loadSeq.current;
     setLoading(true);
     setError("");
     setNotFound(false);
     try {
-      const profile = await gymApi.member360(memberId);
+      const profile = await gymApi.member360(memberId, { signal });
       if (requestId !== loadSeq.current) return;
       setData(profile);
     } catch (e) {
-      if (requestId !== loadSeq.current) return;
+      if (isAbortError(e) || requestId !== loadSeq.current) return;
       setData(null);
       if (isNotFoundError(e)) setNotFound(true);
       else setError(e instanceof Error ? e.message : t("m360.loadFail"));
@@ -4481,7 +4641,9 @@ function Member360Page({
   };
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [memberId]);
 
   const afterAction = async (ok: boolean | void) => {
@@ -5035,6 +5197,9 @@ function Members({
   classes,
   plans,
   memberships,
+  serverTotal,
+  loadingMore,
+  onLoadMore,
   onCreate,
   onUpdate,
   onOpenProfile,
@@ -5045,6 +5210,9 @@ function Members({
   classes: FitnessClass[];
   plans: Plan[];
   memberships: Membership[];
+  serverTotal?: number;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
   onOpenProfile: (id: number) => void;
   onCreate: (payload: {
     first_name: string;
@@ -5159,7 +5327,7 @@ function Members({
   useEffect(() => {
     setShown(PAGE_SIZE);
   }, [query, statusFilter, classFilter, paymentFilter, people.length]);
-  const pagedPeople = visiblePeople.slice(0, shown);
+  const pagedPeople = serverTotal != null ? visiblePeople : visiblePeople.slice(0, shown);
 
   const closeForm = () => {
     setOpen(false);
@@ -5257,9 +5425,9 @@ function Members({
   const exportBackup = async () => {
     const [memberships, payments, attendance, classes, plans, trainers] =
       await Promise.all([
-        gymApi.memberships(),
-        gymApi.payments(),
-        gymApi.attendance(),
+        collectAllPages((offset, limit) => gymApi.memberships({ limit, offset })),
+        collectAllPages((offset, limit) => gymApi.payments({ limit, offset })),
+        collectAllPages((offset, limit) => gymApi.attendance({ limit, offset })),
         gymApi.classes(),
         gymApi.plans(),
         gymApi.trainers().catch(() => []),
@@ -5371,6 +5539,7 @@ function Members({
             amount,
             received_by: clipText(payment.received_by, 80) || "Admin",
             notes: clipText(payment.notes, 240) || "Restored from backup",
+            idempotency_key: newPaymentAttemptId(),
           });
         }
         window.location.reload();
@@ -5612,7 +5781,15 @@ function Members({
             })}
           </tbody>
         </table>
-        <LoadMoreBar shown={shown} total={visiblePeople.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
+        <LoadMoreBar
+          shown={visiblePeople.length}
+          total={serverTotal ?? visiblePeople.length}
+          loading={loadingMore}
+          onMore={() => {
+            if (onLoadMore && (serverTotal ?? 0) > people.length) onLoadMore();
+            else setShown((n) => n + PAGE_SIZE);
+          }}
+        />
         {!visiblePeople.length && (
           <EmptyState title={people.length ? t("members.emptyFilter") : t("members.empty")} />
         )}
@@ -5772,11 +5949,13 @@ function ClassesPage({
         </div>
       </div>
       {section === "calendar" ? (
-        <ClassCalendar
-          classes={classes}
-          trainers={trainers}
-          canManageSchedules={canManageSchedules}
-        />
+        <Suspense fallback={<LoadingState label={t("common.loading")} />}>
+          <ClassCalendar
+            classes={classes}
+            trainers={trainers}
+            canManageSchedules={canManageSchedules}
+          />
+        </Suspense>
       ) : (
       <>
       {open && canAdminister && (
@@ -5932,9 +6111,13 @@ function Memberships({
   memberName,
   planName,
   plans,
+  serverTotal,
+  loadingMore,
+  onLoadMore,
   onRenew,
   onUpdate,
   onDelete,
+  onCancel,
   onSetPaymentStatus,
   onPayment,
 }: {
@@ -5946,6 +6129,10 @@ function Memberships({
   memberName: (id: number) => string;
   planName: (id: number) => string;
   plans: Plan[];
+  serverTotal?: number;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
+  onCancel?: (id: number) => Promise<boolean> | void;
   onRenew: (
     id: number,
     payload: {
@@ -6009,7 +6196,7 @@ function Memberships({
   useEffect(() => {
     setShown(PAGE_SIZE);
   }, [query, status, paymentFilter, items.length]);
-  const pagedItems = visibleItems.slice(0, shown);
+  const pagedItems = serverTotal != null ? visibleItems : visibleItems.slice(0, shown);
   const [selectedMembership, setSelectedMembership] = useState<Membership | null>(null);
   const [membershipView, setMembershipView] = useState<"details" | "renew" | "confirmDelete">("details");
   const [renewSaving, setRenewSaving] = useState(false);
@@ -6137,7 +6324,7 @@ function Memberships({
                       {membershipView === "renew" ? t("memberships.renew") : t("membership.details")}
                     </span>
                     <div className="membership-details-tools">
-                      {membershipView === "details" ? (
+                      {membershipView === "details" && Number(selectedMembership.total_paid) <= 0 ? (
                         <button
                           type="button"
                           className="membership-details-delete"
@@ -6277,6 +6464,20 @@ function Memberships({
                         >
                           {t("pay.record")}
                         </button>
+                        {Number(selectedMembership.total_paid) > 0 && onCancel ? (
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={renewSaving}
+                            onClick={() => {
+                              void Promise.resolve(onCancel(selectedMembership.id)).then((ok) => {
+                                if (ok !== false) closeMembershipPanel();
+                              });
+                            }}
+                          >
+                            {t("memberships.cancel")}
+                          </button>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -6435,7 +6636,15 @@ function Memberships({
             })}
           </tbody>
         </table>
-        <LoadMoreBar shown={shown} total={visibleItems.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
+        <LoadMoreBar
+          shown={visibleItems.length}
+          total={serverTotal ?? visibleItems.length}
+          loading={loadingMore}
+          onMore={() => {
+            if (onLoadMore && (serverTotal ?? 0) > items.length) onLoadMore();
+            else setShown((n) => n + PAGE_SIZE);
+          }}
+        />
         {!visibleItems.length && (
           <EmptyState title={items.length ? t("memberships.emptyFilter") : t("memberships.empty")} />
         )}
@@ -6766,11 +6975,17 @@ function GymPayments({
   memberships,
   members,
   onPayment,
+  serverTotal,
+  loadingMore,
+  onLoadMore,
 }: {
   payments: GymPayment[];
   memberships: Membership[];
   members: Member[];
   onPayment: OnPayment;
+  serverTotal?: number;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   const { t } = useLang();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -6873,7 +7088,7 @@ function GymPayments({
   useEffect(() => {
     setShown(PAGE_SIZE);
   }, [period, selectedMonth, historyQuery, payments.length]);
-  const pagedPayments = visiblePayments.slice(0, shown);
+  const pagedPayments = serverTotal != null ? visiblePayments : visiblePayments.slice(0, shown);
 
   const localMatches = (value: string) => {
     const needle = value.trim().toLowerCase();
@@ -7240,7 +7455,15 @@ function GymPayments({
             })}
           </tbody>
         </table>
-        <LoadMoreBar shown={shown} total={visiblePayments.length} onMore={() => setShown((n) => n + PAGE_SIZE)} />
+        <LoadMoreBar
+          shown={visiblePayments.length}
+          total={serverTotal ?? visiblePayments.length}
+          loading={loadingMore}
+          onMore={() => {
+            if (onLoadMore && (serverTotal ?? 0) > payments.length) onLoadMore();
+            else setShown((n) => n + PAGE_SIZE);
+          }}
+        />
         {!visiblePayments.length && (
           <EmptyState title={payments.length ? t("cash.emptyFilter") : t("cash.empty")} />
         )}
@@ -7257,6 +7480,9 @@ function AttendancePage({
   onCheckIn,
   onCheckOut,
   onOpenProfile,
+  serverTotal,
+  loadingMore,
+  onLoadMore,
 }: {
   records: Attendance[];
   members: Member[];
@@ -7265,6 +7491,9 @@ function AttendancePage({
   onCheckIn: (id: number) => Promise<boolean> | void;
   onCheckOut: (id: number) => Promise<boolean> | void;
   onOpenProfile: (id: number) => void;
+  serverTotal?: number;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   const { t } = useLang();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -7320,7 +7549,7 @@ function AttendancePage({
     setShownVisits(PAGE_SIZE);
   }, [records.length]);
   const pagedInside = inside.slice(0, shownInside);
-  const pagedVisits = records.slice(0, shownVisits);
+  const pagedVisits = serverTotal != null ? records : records.slice(0, shownVisits);
   const visitName = (item: Attendance) =>
     item.member_name || memberById.get(item.member_id)?.name || t("members.unknown");
   const checkouts = records.filter((item) => item.checked_out_at).length;
@@ -7694,7 +7923,15 @@ function AttendancePage({
                 ))}
               </tbody>
             </table>
-            <LoadMoreBar shown={shownVisits} total={records.length} onMore={() => setShownVisits((n) => n + PAGE_SIZE)} />
+            <LoadMoreBar
+              shown={records.length}
+              total={serverTotal ?? records.length}
+              loading={loadingMore}
+              onMore={() => {
+                if (onLoadMore && (serverTotal ?? 0) > records.length) onLoadMore();
+                else setShownVisits((n) => n + PAGE_SIZE);
+              }}
+            />
           </>
         ) : (
           <EmptyState title={t("att.empty")} />

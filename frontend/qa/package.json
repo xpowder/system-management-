@@ -1,0 +1,11 @@
+{
+  "name": "homezup-frontend-qa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "qa": "node browser_qa.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0"
+  }
+}

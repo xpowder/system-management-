@@ -1,4 +1,5 @@
-import { formatHttpError, notifyIfSessionExpired } from './api'
+import { formatHttpError, isAbortError, notifyIfSessionExpired } from './api'
+import { translate } from './i18n'
 
 export type MembershipStatus = 'active' | 'expiring_soon' | 'expired' | 'cancelled' | 'suspended' | 'upcoming'
 export type GymPaymentStatus = 'paid' | 'partial' | 'unpaid'
@@ -19,6 +20,17 @@ export interface Member {
 export interface FitnessClass { id: number; name: string; class_type: string; price_per_member: string | number; member_count: number; team_total: string | number; is_active: boolean }
 export interface Plan { id: number; name: string; duration_months: number; price: string | number; description: string; is_active: boolean; member_count: number }
 export interface Membership { id: number; member_id: number; plan_id: number; start_date: string; end_date: string; price: string | number; status: MembershipStatus; payment_status: GymPaymentStatus; total_paid: string | number; remaining_balance: string | number; notes?: string }
+
+export interface PageMeta {
+  total: number
+  limit: number
+  offset: number
+  hasMore: boolean
+}
+
+export interface Paged<T> extends PageMeta {
+  items: T[]
+}
 export interface GymPayment {
   id: number
   membership_id: number
@@ -326,15 +338,56 @@ function downloadMime(name: string, type: string) {
   return type || 'application/octet-stream'
 }
 
-function requestError(status: number, body: unknown = {}) {
+const REQUEST_TIMEOUT_MS = 20_000
+
+function requestError(status: number, body: unknown = {}, extras?: { notFound?: string; conflict?: string }) {
   const error = new Error(
     formatHttpError(status, body, {
-      notFound: 'The requested gym record was not found.',
-      conflict: 'This operation conflicts with an existing gym record.',
+      notFound: extras?.notFound || translate('http.gymNotFound'),
+      conflict: extras?.conflict || translate('http.gymConflict'),
     }),
   ) as Error & { status: number }
   error.status = status
   return error
+}
+
+export function readPageMeta(headers: Headers, returned: number): PageMeta {
+  const totalRaw = Number(headers.get('X-Total-Count'))
+  const limitRaw = Number(headers.get('X-Limit'))
+  const offsetRaw = Number(headers.get('X-Offset'))
+  const hasMoreHeader = (headers.get('X-Has-More') || '').toLowerCase()
+  const total = Number.isFinite(totalRaw) ? totalRaw : returned
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : returned
+  const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0
+  const hasMore = hasMoreHeader === 'true' || (hasMoreHeader === '' && offset + returned < total)
+  return { total, limit, offset, hasMore }
+}
+
+function withTimeoutSignal(userSignal?: AbortSignal | null) {
+  const controller = new AbortController()
+  const timer = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const onAbort = () => controller.abort()
+  if (userSignal) {
+    if (userSignal.aborted) controller.abort()
+    else userSignal.addEventListener('abort', onAbort, { once: true })
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      globalThis.clearTimeout(timer)
+      userSignal?.removeEventListener('abort', onAbort)
+    },
+  }
+}
+
+function listQuery(params: Record<string, string | number | boolean | undefined | null> = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    query.set(key, String(value))
+  })
+  const suffix = query.toString()
+  return suffix ? `?${suffix}` : ''
 }
 
 export function httpStatus(error: unknown): number | undefined {
@@ -344,31 +397,65 @@ export function httpStatus(error: unknown): number | undefined {
   return undefined
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function rawFetch(path: string, options?: RequestInit) {
+  const timed = withTimeoutSignal(options?.signal)
   try {
     const token = csrfToken()
     const headers: Record<string, string> = { ...(options?.headers as Record<string, string> | undefined) }
     if (options?.body) headers['Content-Type'] = 'application/json'
     if (token) headers['X-CSRFToken'] = token
-    const response = await fetch(`${base}${path}`, { credentials: 'include', ...options, headers })
-    const body = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      notifyIfSessionExpired(response.status, body)
-      throw requestError(response.status, body)
-    }
-    return body as T
+    return await fetch(`${base}${path}`, { credentials: 'include', ...options, headers, signal: timed.signal })
   } catch (error) {
-    if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
+    if (isAbortError(error)) {
+      if (options?.signal?.aborted) throw error
+      throw new Error(translate('http.timeout'))
+    }
+    if (error instanceof TypeError) throw new Error(translate('http.offlineGym'))
     throw error
+  } finally {
+    timed.cleanup()
   }
+}
+
+async function request<T>(path: string, options?: RequestInit, extras?: { notFound?: string; conflict?: string }): Promise<T> {
+  const response = await rawFetch(path, options)
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    notifyIfSessionExpired(response.status, body)
+    throw requestError(response.status, body, extras)
+  }
+  return body as T
+}
+
+async function requestPaged<T>(path: string, options?: RequestInit): Promise<Paged<T>> {
+  const response = await rawFetch(path, options)
+  const body = await response.json().catch(() => [])
+  if (!response.ok) {
+    notifyIfSessionExpired(response.status, body)
+    throw requestError(response.status, body)
+  }
+  const items = Array.isArray(body) ? (body as T[]) : []
+  return { items, ...readPageMeta(response.headers, items.length) }
+}
+
+export async function collectAllPages<T>(
+  fetchPage: (offset: number, limit: number) => Promise<Paged<T>>,
+  pageSize = 500,
+): Promise<T[]> {
+  const items: T[] = []
+  let offset = 0
+  for (let i = 0; i < 40; i += 1) {
+    const page = await fetchPage(offset, pageSize)
+    items.push(...page.items)
+    if (!page.hasMore || !page.items.length) break
+    offset += page.items.length
+  }
+  return items
 }
 
 async function downloadFile(path: string, fallbackName: string) {
   try {
-    const token = csrfToken()
-    const headers: Record<string, string> = {}
-    if (token) headers['X-CSRFToken'] = token
-    const response = await fetch(`${base}${path}`, { credentials: 'include', headers })
+    const response = await rawFetch(path)
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       notifyIfSessionExpired(response.status, body)
@@ -377,7 +464,7 @@ async function downloadFile(path: string, fallbackName: string) {
     const payload = await response.blob()
     const type = response.headers.get('Content-Type') || payload.type || ''
     if (type.includes('text/html') || type.includes('application/json')) {
-      throw new Error('Unable to download this file. Please try again.')
+      throw new Error(translate('http.downloadFail'))
     }
     const filename = downloadFilename(response.headers.get('Content-Disposition') || '', fallbackName)
     const file = new File([payload], filename, { type: downloadMime(filename, type) })
@@ -406,14 +493,14 @@ async function downloadFile(path: string, fallbackName: string) {
       URL.revokeObjectURL(url)
     }, 4000)
   } catch (error) {
-    if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
+    if (error instanceof TypeError) throw new Error(translate('http.offlineGym'))
     throw error
   }
 }
 export const gymApi = {
   dashboard: () => request<GymDashboard>('/fitness/dashboard'),
-  dashboardSummary: (date: string) =>
-    request<DashboardSummary>(`/fitness/dashboard/summary?date=${encodeURIComponent(date)}`),
+  dashboardSummary: (date: string, options?: { signal?: AbortSignal }) =>
+    request<DashboardSummary>(`/fitness/dashboard/summary?date=${encodeURIComponent(date)}`, options),
   classRevenue: (year: number, month: number) => request<ClassRevenueReport>(`/fitness/reports/classes?year=${year}&month=${month}`),
   trainerPayroll: (year: number, month: number) => request<TrainerPayrollReport>(`/fitness/reports/trainers?year=${year}&month=${month}`),
   monthlyOverview: (year: number, month: number) => request<MonthlyOverview>(`/fitness/reports/overview?year=${year}&month=${month}`),
@@ -425,16 +512,26 @@ export const gymApi = {
   expenses: (year: number, month: number) => request<GymExpense[]>(`/fitness/expenses?year=${year}&month=${month}`),
   createExpense: (payload: { category: string; title?: string; amount: number | string; year?: number; month?: number; notes?: string }) => request<GymExpense>('/fitness/expenses', { method: 'POST', body: JSON.stringify(payload) }),
   deleteExpense: (id: number) => request<{ success: boolean }>(`/fitness/expenses/${id}`, { method: 'DELETE' }),
-  members: (search = '') => request<Member[]>(`/fitness/members${search ? `?search=${encodeURIComponent(search)}` : ''}`),
-  member360: (id: number) => request<Member360>(`/fitness/members/${id}/360`),
+  members: (params?: string | { search?: string; limit?: number; offset?: number; signal?: AbortSignal }) => {
+    const query = typeof params === 'string' ? { search: params } : params || {}
+    return requestPaged<Member>(
+      `/fitness/members${listQuery({ search: query.search, limit: query.limit, offset: query.offset })}`,
+      { signal: query.signal },
+    )
+  },
+  member360: (id: number, options?: { signal?: AbortSignal }) =>
+    request<Member360>(`/fitness/members/${id}/360`, options),
   createMember: (payload: { first_name: string; last_name: string; phone: string; email: string; id_number: string; address?: string; city?: string; country?: string; postal_code?: string }) => request<Member>('/fitness/members', { method: 'POST', body: JSON.stringify(payload) }),
   updateMember: (id: number, payload: { first_name: string; last_name: string; phone: string; email: string; id_number: string; address?: string; city?: string; country?: string; postal_code?: string }) => request<Member>(`/fitness/members/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteMember: (id: number) => request<{ success: boolean }>(`/fitness/members/${id}`, { method: 'DELETE' }),
   memberClass: (id: number) => request<{ id: number | null; training_class_id: number | null; client_id: number }>(`/fitness/members/${id}/class`),
   setMemberClass: (id: number, classId: number | null) => request<{ id: number | null; training_class_id: number | null; client_id: number }>(`/fitness/members/${id}/class`, { method: 'PUT', body: JSON.stringify({ class_id: classId }) }),
   classes: () => request<FitnessClass[]>('/fitness/classes'),
-  classCalendar: (from: string, to: string) =>
-    request<ClassCalendar>(`/fitness/classes/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  classCalendar: (from: string, to: string, options?: { signal?: AbortSignal }) =>
+    request<ClassCalendar>(
+      `/fitness/classes/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      options,
+    ),
   classSchedules: (trainingClassId?: number) =>
     request<ClassSchedule[]>(
       `/fitness/classes/schedules${trainingClassId ? `?training_class_id=${trainingClassId}` : ''}`,
@@ -455,7 +552,13 @@ export const gymApi = {
   createPlan: (payload: { name: string; duration_months: number; price: number | string; description?: string; is_active?: boolean }) => request<Plan>('/fitness/plans', { method: 'POST', body: JSON.stringify(payload) }),
   updatePlan: (id: number, payload: { name: string; duration_months: number; price: number | string; description?: string; is_active?: boolean }) => request<Plan>(`/fitness/plans/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deletePlan: (id: number) => request<{ success: boolean }>(`/fitness/plans/${id}`, { method: 'DELETE' }),
-  memberships: (status = '') => request<Membership[]>(`/fitness/memberships${status ? `?status=${status}` : ''}`),
+  memberships: (params?: string | { status?: string; limit?: number; offset?: number; signal?: AbortSignal }) => {
+    const query = typeof params === 'string' ? { status: params } : params || {}
+    return requestPaged<Membership>(
+      `/fitness/memberships${listQuery({ status: query.status, limit: query.limit, offset: query.offset })}`,
+      { signal: query.signal },
+    )
+  },
   expiring: () => request<Membership[]>('/fitness/memberships/expiring'),
   reminders: () => request<WhatsAppReminderList>('/fitness/reminders'),
   markReminderSent: (membershipId: number, message = '') => request<WhatsAppReminder>(`/fitness/reminders/${membershipId}/sent`, { method: 'POST', body: JSON.stringify({ message }) }),
@@ -463,18 +566,37 @@ export const gymApi = {
   updateMembership: (id: number, payload: { member_id: number; plan_id: number; start_date: string; notes: string; price?: number | string }) => request<Membership>(`/fitness/memberships/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   updateMembershipPrice: (id: number, price: number | string) => request<Membership>(`/fitness/memberships/${id}/price`, { method: 'PATCH', body: JSON.stringify({ price }) }),
   updateMembershipRemaining: (id: number, remaining: number | string) => request<Membership>(`/fitness/memberships/${id}/remaining`, { method: 'PATCH', body: JSON.stringify({ remaining }) }),
-  deleteMembership: (id: number) => request<{ success: boolean }>(`/fitness/memberships/${id}`, { method: 'DELETE' }),
+  deleteMembership: (id: number) =>
+    request<{ success: boolean }>(
+      `/fitness/memberships/${id}`,
+      { method: 'DELETE' },
+      { conflict: translate('http.membershipProtected') },
+    ),
+  cancelMembership: (id: number) => request<Membership>(`/fitness/memberships/${id}/cancel`, { method: 'POST' }),
   renew: (id: number, payload: { member_id: number; plan_id: number; start_date: string; notes: string }) => request<Membership>(`/fitness/memberships/${id}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
-  payments: (params?: { q?: string; year?: number; month?: number }) => {
-    const query = new URLSearchParams()
-    if (params?.q) query.set('q', params.q)
-    if (params?.year) query.set('year', String(params.year))
-    if (params?.month) query.set('month', String(params.month))
-    const suffix = query.toString() ? `?${query.toString()}` : ''
-    return request<GymPayment[]>(`/fitness/payments${suffix}`)
-  },
+  payments: (params?: { q?: string; year?: number; month?: number; limit?: number; offset?: number; signal?: AbortSignal }) =>
+    requestPaged<GymPayment>(
+      `/fitness/payments${listQuery({
+        q: params?.q,
+        year: params?.year,
+        month: params?.month,
+        limit: params?.limit,
+        offset: params?.offset,
+      })}`,
+      { signal: params?.signal },
+    ),
   membershipPayments: (id: number) => request<GymPayment[]>(`/fitness/memberships/${id}/payments`),
-  payment: (id: number, payload: { amount: number; received_by: string; notes: string; remaining?: number }) => request<GymPayment>(`/fitness/memberships/${id}/payments`, { method: 'POST', body: JSON.stringify(payload) }),
+  payment: (
+    id: number,
+    payload: { amount: number; received_by: string; notes: string; remaining?: number; idempotency_key?: string },
+  ) =>
+    request<GymPayment>(
+      `/fitness/memberships/${id}/payments`,
+      { method: 'POST', body: JSON.stringify(payload) },
+      {
+        conflict: translate('http.payStale'),
+      },
+    ),
   downloadCashLog: (year: number, month: number, format: 'xlsx' | 'pdf') =>
     downloadFile(
       `/fitness/payments/export/${format}?year=${year}&month=${month}`,
@@ -503,14 +625,23 @@ export const gymApi = {
       win.location.replace(url)
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch (error) {
-      if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to load gym data.")
+      if (error instanceof TypeError) throw new Error(translate('http.offlineGym'))
       throw error
     }
   },
   updatePaymentStatus: (id: number, status: 'paid' | 'unpaid') => request<Membership>(`/fitness/memberships/${id}/payment-status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-  attendance: () => request<Attendance[]>('/fitness/attendance'),
+  attendance: (params?: { limit?: number; offset?: number; signal?: AbortSignal }) =>
+    requestPaged<Attendance>(
+      `/fitness/attendance${listQuery({ limit: params?.limit, offset: params?.offset })}`,
+      { signal: params?.signal },
+    ),
   lookupAttendance: (q: string) => request<{ query: string; exact: boolean; matches: AttendanceDeskMember[] }>(`/fitness/attendance/lookup?q=${encodeURIComponent(q)}`),
-  checkIn: (member_id: number) => request<Attendance>('/fitness/attendance/check-in', { method: 'POST', body: JSON.stringify({ member_id }) }),
+  checkIn: (member_id: number) =>
+    request<Attendance>(
+      '/fitness/attendance/check-in',
+      { method: 'POST', body: JSON.stringify({ member_id }) },
+      { conflict: translate('http.alreadyCheckedIn') },
+    ),
   checkOut: (member_id: number) => request<Attendance>('/fitness/attendance/check-out', { method: 'POST', body: JSON.stringify({ member_id }) }),
   memberQrLookup: (token: string) =>
     request<MemberQrLookup>(`/fitness/members/qr/${encodeURIComponent(token)}`),
@@ -524,7 +655,16 @@ export const gymApi = {
   deleteTrainer: (id: number) => request<{ success: boolean }>(`/fitness/trainers/${id}`, { method: 'DELETE' }),
   notificationSettings: () => request<NotificationSettings>('/notifications/settings'),
   updateNotificationSettings: (payload: Omit<NotificationSettings, 'id'>) => request<NotificationSettings>('/notifications/settings', { method: 'PUT', body: JSON.stringify(payload) }),
-  notifications: (category = '', unread = false) => request<GymNotification[]>(`/notifications${category || unread ? `?${category ? `category=${encodeURIComponent(category)}` : ''}${category && unread ? '&' : ''}${unread ? 'unread=true' : ''}` : ''}`),
+  notifications: (category = '', unread = false, params?: { limit?: number; offset?: number; signal?: AbortSignal }) =>
+    requestPaged<GymNotification>(
+      `/notifications${listQuery({
+        category: category || undefined,
+        unread: unread || undefined,
+        limit: params?.limit,
+        offset: params?.offset,
+      })}`,
+      { signal: params?.signal },
+    ),
   markNotificationRead: (id: number) => request<GymNotification>(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: () => request<{ success: boolean }>('/notifications/read-all', { method: 'POST' }),
   deleteNotification: (id: number) => request<{ success: boolean }>(`/notifications/${id}`, { method: 'DELETE' }),

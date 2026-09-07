@@ -100,6 +100,20 @@ function formatLocalDate(iso: string) {
   }).format(new Date(year, month - 1, day));
 }
 
+function formatListDayDate(iso: string) {
+  const [year, month, day] = iso.slice(0, 10).split("-").map(Number);
+  return new Intl.DateTimeFormat(localeFor(), {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(new Date(year, month - 1, day));
+}
+
+function isoWeekdayIndex(iso: string) {
+  const [year, month, day] = iso.slice(0, 10).split("-").map(Number);
+  return (new Date(year, month - 1, day).getDay() + 6) % 7;
+}
+
 function weekdayShort(index: number) {
   return new Intl.DateTimeFormat(localeFor(), { weekday: "short" }).format(
     new Date(2026, 8, 7 + index),
@@ -297,6 +311,7 @@ export function ClassCalendar({
   const rangeRef = useRef(range);
   rangeRef.current = range;
   const calendarSeq = useRef(0);
+  const calendarAbort = useRef<AbortController | null>(null);
   const scheduleSeq = useRef(0);
   const todayIso = toIsoDate(new Date());
   const selectedClass = classes.find((item) => String(item.id) === form.training_class_id);
@@ -393,17 +408,21 @@ export function ClassCalendar({
   const fetchCalendar = async (from: string, to: string, showLoading: boolean) => {
     if (!showLoading && (from !== rangeRef.current.from || to !== rangeRef.current.to)) return;
     const requestId = ++calendarSeq.current;
+    calendarAbort.current?.abort();
+    const controller = new AbortController();
+    calendarAbort.current = controller;
     if (showLoading) {
       setLoading(true);
       setError("");
     }
     try {
-      const data = await gymApi.classCalendar(from, to);
+      const data = await gymApi.classCalendar(from, to, { signal: controller.signal });
       if (requestId !== calendarSeq.current) return;
       if (from !== rangeRef.current.from || to !== rangeRef.current.to) return;
       setItems(data.items || []);
       if (showLoading) setError("");
     } catch (e) {
+      if (controller.signal.aborted) return;
       if (requestId !== calendarSeq.current) return;
       if (from !== rangeRef.current.from || to !== rangeRef.current.to) return;
       if (showLoading) setItems([]);
@@ -875,23 +894,36 @@ export function ClassCalendar({
           <section className={`panel class-calendar-list${view === "day" ? " is-visible" : ""}`}>
             {listDays
               .filter((iso) => (byDate.get(iso) || []).length > 0)
-              .map((iso) => (
-                <div key={iso} className="class-calendar-list-day">
-                  <h3>
-                    {formatLocalDate(iso)}
-                    {iso === todayIso ? ` · ${t("cal.today")}` : ""}
-                  </h3>
-                  <div className="class-calendar-events">
-                    {(byDate.get(iso) || []).map((item) => (
-                      <EventCard
-                        key={`${item.schedule_id}-${item.date}-${item.start_time}-${item.training_class_id}`}
-                        item={item}
-                        onOpen={setSelected}
-                      />
-                    ))}
+              .map((iso) => {
+                const dayEvents = byDate.get(iso) || [];
+                const isToday = iso === todayIso;
+                return (
+                  <div
+                    key={iso}
+                    className={`class-calendar-list-day${isToday ? " is-today" : ""}`}
+                  >
+                    <div className="class-calendar-list-day-head">
+                      <div>
+                        <span className="eyebrow">{t(weekdayKey(WEEKDAYS[isoWeekdayIndex(iso)]))}</span>
+                        <h3>{formatListDayDate(iso)}</h3>
+                      </div>
+                      <div className="class-calendar-list-day-meta">
+                        {isToday ? <span className="status active">{t("cal.today")}</span> : null}
+                        <span className="member-360-count">{dayEvents.length}</span>
+                      </div>
+                    </div>
+                    <div className="class-calendar-events">
+                      {dayEvents.map((item) => (
+                        <EventCard
+                          key={`${item.schedule_id}-${item.date}-${item.start_time}-${item.training_class_id}`}
+                          item={item}
+                          onOpen={setSelected}
+                        />
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
           </section>
         </>
       ) : error ? null : (

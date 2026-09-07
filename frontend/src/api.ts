@@ -1,3 +1,5 @@
+import { translate } from './i18n'
+
 export type BookingStatus = 'pending' | 'approved' | 'active' | 'completed' | 'cancelled' | 'rejected' | 'expired'
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid'
 
@@ -97,24 +99,62 @@ export function formatHttpError(
     if (isInvalidCredentialsMessage(joined)) {
       return joined
     }
-    return 'Your session has expired. Please log in again.'
+    return translate('http.sessionExpired')
   }
-  if (status === 403) return "You don't have permission to perform this action."
-  if (status === 404) return extras?.notFound || 'The requested record was not found.'
-  if (status >= 500) return 'The server could not complete this request. Please try again.'
-  if (status === 409) return extras?.conflict || joined || 'This operation conflicts with an existing record.'
+  if (status === 403) return translate('http.forbidden')
+  if (status === 404) return extras?.notFound || translate('http.notFound')
+  if (status === 422) return joined || translate('http.badRequest')
+  if (status === 429) return translate('http.tooMany')
+  if (status >= 500) return translate('http.server')
+  if (status === 409) {
+    const lower = joined.toLowerCase()
+    if (lower.includes('remaining balance') || lower.includes('payment exceeds')) {
+      return extras?.conflict || translate('http.payStale')
+    }
+    if (lower.includes('cannot be deleted') || lower.includes('payment history')) {
+      return extras?.conflict || translate('http.membershipProtected')
+    }
+    if (lower.includes('already checked in')) {
+      return extras?.conflict || joined
+    }
+    return extras?.conflict || joined || translate('http.conflict')
+  }
   if (joined) return joined
-  if (status === 400) return 'Please check the form and try again.'
-  return 'Something went wrong. Please try again.'
+  if (status === 400) return translate('http.badRequest')
+  return translate('http.generic')
+}
+
+export function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+const REQUEST_TIMEOUT_MS = 20_000
+
+function withTimeoutSignal(userSignal?: AbortSignal | null) {
+  const controller = new AbortController()
+  const timer = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const onAbort = () => controller.abort()
+  if (userSignal) {
+    if (userSignal.aborted) controller.abort()
+    else userSignal.addEventListener('abort', onAbort, { once: true })
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      globalThis.clearTimeout(timer)
+      userSignal?.removeEventListener('abort', onAbort)
+    },
+  }
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const timed = withTimeoutSignal(options?.signal)
   try {
     const token = csrfToken()
     const headers: Record<string, string> = { ...(options?.headers as Record<string, string> | undefined) }
     if (options?.body) headers['Content-Type'] = 'application/json'
     if (token) headers['X-CSRFToken'] = token
-    const response = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options, headers })
+    const response = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options, headers, signal: timed.signal })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) {
       notifyIfSessionExpired(response.status, body)
@@ -122,8 +162,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     }
     return body as T
   } catch (error) {
-    if (error instanceof TypeError) throw new Error("You are offline. Connect to the internet to continue.")
+    if (isAbortError(error)) {
+      if (options?.signal?.aborted) throw error
+      throw new Error(translate('http.timeout'))
+    }
+    if (error instanceof TypeError) throw new Error(translate('http.offline'))
     throw error
+  } finally {
+    timed.cleanup()
   }
 }
 

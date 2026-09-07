@@ -14,6 +14,12 @@ dist-ssr
 .env
 .env.*
 !.env.example
+qa/.qa-credentials.json
+qa/qa-results.json
+qa/*.png
+qa/node_modules
+qa/playwright-report
+qa/test-results
 
 # Editor directories and files
 .vscode/*
